@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "2.5.6"
+__version__ = "2.6.7"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -26,7 +26,6 @@ from .materials import (
     OT_FBXMT_Add_Chain_Material,
     OT_FBXMT_Delete_Chain_Material,
     OT_FBXMT_Set_Texel_Density,
-    OT_FBXMT_Set_Corner_Preset,
     OT_FBXMT_Set_Checker_Scale,
     OT_FBXMT_Assign_To_Faces,
     OT_FBXMT_Select_By_Material,
@@ -89,8 +88,8 @@ classes = (
     FBXMT_PT_Materials,
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
-    FBXMT_PT_AddonPrefs,
     FBXMT_PT_Export,
+    FBXMT_PT_AddonPrefs,
 )
 
 

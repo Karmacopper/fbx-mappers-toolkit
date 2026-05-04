@@ -97,7 +97,7 @@ def get_all_chain_materials():
 
 
 def _get_prefs():
-    """Retrieve global addon preferences from WindowManager."""
+    """Retrieve global addon preferences from the active scene."""
     try:
         return bpy.context.scene.fbxmt_prefs_global
     except AttributeError:

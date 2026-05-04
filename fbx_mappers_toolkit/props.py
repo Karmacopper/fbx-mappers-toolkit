@@ -80,19 +80,14 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     color_ignore_b:  bpy.props.FloatVectorProperty(name="Ignore B",  subtype='COLOR', min=0, max=1, default=(0.15, 0.15, 0.15, 1.0), size=4)
 
     bake_labels: bpy.props.BoolProperty(
-        name="Label Baked Grid",
-        description="Draw A1-H8 grid coordinates on each checker square in the baked PNG",
+        name="Label Grid Squares",
+        description="Overlay A1-H8 grid coordinate labels on baked material PNGs",
         default=True,
     )
 
     # Chain_01 (Island 01) baseline colours.
     color_chain01_a: bpy.props.FloatVectorProperty(name="Chain A", subtype='COLOR', min=0, max=1, default=(0.09, 0.29, 0.81, 1.0), size=4)
     color_chain01_b: bpy.props.FloatVectorProperty(name="Chain B", subtype='COLOR', min=0, max=1, default=(0.81, 0.27, 0.05, 1.0), size=4)
-    bake_labels: bpy.props.BoolProperty(
-        name="Label Grid Squares",
-        description="Overlay A1-H8 grid coordinate labels on baked material PNGs",
-        default=True,
-    )
 
 
 class FBXMT_Props(PropertyGroup):

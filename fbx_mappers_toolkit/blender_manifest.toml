@@ -2,7 +2,7 @@ schema_version = "1.0.0"
 
 id = "fbx_mappers_toolkit"
 name = "FBX Mapper's Toolkit"
-version = "2.5.6"
+version = "2.6.7"
 tagline = "UV unwrap, material management and import/export for UE5 mapping"
 maintainer = "Ja5mine"
 type = "add-on"

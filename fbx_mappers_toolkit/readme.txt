@@ -1,4 +1,4 @@
-FBX Mapper's Toolkit v2.5.6
+FBX Mapper's Toolkit v2.6.7
 For Blender 5.1+ - Unreal Engine 5 Map Geometry Workflow
 
 Original exporter by Ja5mine (2021)
@@ -357,6 +357,24 @@ All other code in this addon is original work licensed under GPL v3.
 ------------------------------------------------------------------------
 CHANGELOG
 ------------------------------------------------------------------------
+
+2.6.7  Fix: Preferences panel now correctly appears last in the
+       N-panel — registration order in classes tuple corrected.
+
+2.6.6  QoL: Rebuild Materials button added to the bottom of the
+       Preferences panel — no more scrolling back up after tweaking
+       colours or checker settings.
+
+2.6.5  Housekeeping pass: duplicate bake_labels property in
+       FBXMT_GlobalPrefs removed. Duplicate OT_FBXMT_Set_Corner_Preset
+       import in __init__.py removed. Stale _get_prefs() docstring
+       corrected. Backslash line continuations in fbx_import.py
+       replaced with parenthesised expressions. Dead _collect_materials
+       static method removed from OT_FBXMT_Export. Scene Setup panel
+       "Reset Scene to Defaults" button removed — redundant now that
+       the startup template is the established first-run workflow.
+       Version strings corrected across __init__.py, blender_manifest.toml,
+       and readme.txt (were stuck at 2.5.6).
 
 2.5.6  Blender 5.1 node API fixes: ShaderNodeMixRGB replaced with
        ShaderNodeMix (RGBA), ShaderNodeInvert replaced with DIFFERENCE

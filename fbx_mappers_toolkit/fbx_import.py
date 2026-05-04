@@ -99,13 +99,19 @@ def get_newly_imported(before_names, import_type):
                 bm.from_mesh(mesh)
                 bm.faces.ensure_lookup_table()
                 for face in bm.faces:
-                    current = mesh.materials[face.material_index]                               if face.material_index < len(mesh.materials) else None
+                    current = (
+                        mesh.materials[face.material_index]
+                        if face.material_index < len(mesh.materials) else None
+                    )
                     if current and (current.name == FBXMT_IGNORE_MATERIAL
                                     or _is_chain_material(current)):
                         continue
                     world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
                     dot_z        = abs(world_normal.dot(z_axis))
-                    mn = ('M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling')                          if dot_z >= floor_threshold_dot else 'M_FBXMT_Wall'
+                    mn = (
+                        ('M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling')
+                        if dot_z >= floor_threshold_dot else 'M_FBXMT_Wall'
+                    )
                     if mn in slot_index:
                         face.material_index = slot_index[mn]
                 bm.to_mesh(mesh)

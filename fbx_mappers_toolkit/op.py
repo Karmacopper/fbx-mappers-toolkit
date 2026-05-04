@@ -147,18 +147,6 @@ class OT_FBXMT_Export(Operator):
 
 
     @staticmethod
-    def _collect_materials(mesh_objects):
-        """Return ordered list of unique materials across all mesh objects."""
-        seen = set()
-        mats = []
-        for obj in mesh_objects:
-            for slot in obj.material_slots:
-                if slot.material and slot.material.name not in seen:
-                    seen.add(slot.material.name)
-                    mats.append(slot.material)
-        return mats
-
-    @staticmethod
     def _draw_grid_labels(img, checker_scale):
         """Draw A1-H8 grid coordinates onto img pixel data in-place.
 

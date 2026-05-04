@@ -4,7 +4,25 @@ All notable changes to FBX Mapper's Toolkit are documented here.
 
 ---
 
-## [2.5.6] — Current
+## [2.6.7] — Current
+
+- Fix: Preferences panel now correctly appears last in the N-panel — registration order in `classes` tuple corrected in `__init__.py`
+
+## [2.6.6]
+
+- QoL: Rebuild Materials button added to the bottom of the Preferences panel — no more scrolling back up to the Materials panel after tweaking colours or checker settings
+
+## [2.6.5] — Housekeeping pass
+
+- Duplicate `bake_labels` property removed from `FBXMT_GlobalPrefs` in `props.py` (was silently clobbering the first definition)
+- Duplicate `OT_FBXMT_Set_Corner_Preset` import removed from `__init__.py`
+- Stale `_get_prefs()` docstring corrected ("from WindowManager" → "from the active scene")
+- Backslash line continuations in `fbx_import.py` replaced with parenthesised expressions
+- Dead `_collect_materials` static method removed from `OT_FBXMT_Export` in `op.py`
+- Scene Setup panel "Reset Scene to Defaults" button removed — redundant now that the startup template is the established first-run workflow
+- Version strings corrected across `__init__.py`, `blender_manifest.toml`, and `readme.txt` (were stuck at 2.5.6)
+
+## [2.5.6]
 
 - Corner marker system rebuilt: `corner_mark_length` slider replaced with 4 preset buttons (12.5 / 25 / 37.5 / 50% of texel tile)
 - Quarter-circle SDF markers added — radius = half arm length, toggle in Preferences, drawn in shader alongside cross arms

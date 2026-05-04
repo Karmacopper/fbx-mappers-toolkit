@@ -86,11 +86,6 @@ class FBXMT_PT_SceneSetup(Panel):
         layout.operator("fbxmt.save_template", text="Save Startup Template", icon="FILE_BLEND")
         layout.label(text="Saves current scene as template - restart Blender after", icon="INFO")
 
-        layout.separator()
-        row = layout.row()
-        row.alert = True
-        row.operator("fbxmt.scene_setup", text="Reset Scene to Defaults", icon="LOOP_BACK")
-
 
 # ─── Materials ────────────────────────────────────────────────────────────────
 
@@ -317,6 +312,11 @@ class FBXMT_PT_AddonPrefs(Panel):
         row = box.row(align=True)
         row.prop(prefs, "color_chain01_a", text="A")
         row.prop(prefs, "color_chain01_b", text="B")
+
+        layout.separator()
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator("fbxmt.rebuild_materials", text="Rebuild Materials", icon="FILE_REFRESH")
 
 
 # ─── Export ───────────────────────────────────────────────────────────────────
