@@ -1,0 +1,486 @@
+import bpy
+import bmesh
+from bpy.types import Operator
+from mathutils import Vector
+import math
+from .materials import (
+    FBXMT_FLOOR_MATERIALS,
+    FBXMT_WALL_MATERIALS,
+    FBXMT_IGNORE_MATERIAL,
+    CHAIN_PREFIX,
+    _chain_index,
+    LIGHTMAP_CHANNEL_NAME,
+)
+from .uv_pack import pack_islands
+
+
+# ─── Material helpers ─────────────────────────────────────────────────────────
+
+def get_face_material_name(face, mesh):
+    if face.material_index < len(mesh.materials):
+        mat = mesh.materials[face.material_index]
+        if mat:
+            return mat.name
+    return None
+
+
+def is_chain_mat_name(name):
+    return name is not None and name.startswith(CHAIN_PREFIX) and _chain_index(name) is not None
+
+
+def get_chain_mat_names_on_mesh(mesh):
+    """Sorted list of chain material names present in this mesh's slots."""
+    names = [m.name for m in mesh.materials if m and is_chain_mat_name(m.name)]
+    names.sort(key=lambda n: _chain_index(n))
+    return names
+
+
+# ─── Connectivity ─────────────────────────────────────────────────────────────
+
+def find_connected_groups(face_list):
+    """
+    Walk connectivity within face_list.
+    Material boundary is a hard stop: neighbours must share the same
+    material_index. Returns list of lists of BMFaces.
+
+    Note: bm and mesh are NOT parameters — we only need the face list itself.
+    """
+    face_index_set = set(f.index for f in face_list)
+    visited        = set()
+    groups         = []
+
+    for start_face in face_list:
+        if start_face.index in visited:
+            continue
+        group = []
+        queue = [start_face]
+        visited.add(start_face.index)
+        while queue:
+            current = queue.pop()
+            group.append(current)
+            for edge in current.edges:
+                for linked in edge.link_faces:
+                    if (linked.index not in visited
+                            and linked.index in face_index_set
+                            and linked.material_index == current.material_index):
+                        visited.add(linked.index)
+                        queue.append(linked)
+        groups.append(group)
+
+    return groups
+
+
+# ─── Chain sorting ────────────────────────────────────────────────────────────
+
+def sort_face_chain(group):
+    """
+    Sort a connected group into a linear chain by walking shared edges.
+    Falls back to unsorted on closed loops or branching geometry.
+    """
+    if len(group) <= 1:
+        return group
+
+    index_set    = set(f.index for f in group)
+    face_by_idx  = {f.index: f for f in group}
+    adjacency    = {f.index: [] for f in group}
+
+    for face in group:
+        for edge in face.edges:
+            for linked in edge.link_faces:
+                if linked.index != face.index and linked.index in index_set:
+                    if linked.index not in adjacency[face.index]:
+                        adjacency[face.index].append(linked.index)
+
+    ends = [idx for idx, nbrs in adjacency.items() if len(nbrs) == 1]
+
+    if len(ends) == 0 or len(ends) > 2:
+        return group  # closed loop or branching — return unsorted
+
+    start   = ends[0]
+    chain   = [face_by_idx[start]]
+    prev    = None
+    current = start
+
+    while True:
+        nbrs = [n for n in adjacency[current] if n != prev]
+        if not nbrs:
+            break
+        next_idx = nbrs[0]
+        chain.append(face_by_idx[next_idx])
+        prev    = current
+        current = next_idx
+
+    return chain if len(chain) == len(group) else group
+
+
+# ─── Projection ───────────────────────────────────────────────────────────────
+
+def get_face_axes(face, world_matrix):
+    """
+    Return (u_axis, v_axis) for a wall/chain face.
+    V = world Z projected onto the face plane — keeps vertical consistent.
+    U = perpendicular to normal and V.
+    """
+    z_axis       = Vector((0.0, 0.0, 1.0))
+    world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
+    v_axis       = (z_axis - z_axis.dot(world_normal) * world_normal).normalized()
+    if v_axis.length < 0.001:
+        v_axis = Vector((0.0, 1.0, 0.0))
+    u_axis = -(world_normal.cross(v_axis).normalized())
+    return u_axis, v_axis
+
+
+def get_shared_edge_loops(face_a, face_b):
+    """Return the two loops on face_a that form the shared edge with face_b, or None."""
+    verts_b      = {v.index for v in face_b.verts}
+    shared_loops = [loop for loop in face_a.loops if loop.vert.index in verts_b]
+    return shared_loops if len(shared_loops) == 2 else None
+
+
+def _is_linear_chain(group):
+    """Return True if group forms a linear strip (each face has at most 2
+    neighbours within the group). Triangulated meshes fail this — branching
+    or closed loops mean edge-stitching is unreliable."""
+    if len(group) <= 1:
+        return True
+    index_set = set(f.index for f in group)
+    for face in group:
+        nbr_count = sum(
+            1 for edge in face.edges
+            for linked in edge.link_faces
+            if linked.index != face.index and linked.index in index_set
+        )
+        if nbr_count > 2:
+            return False
+    ends = [
+        face for face in group
+        if sum(
+            1 for edge in face.edges
+            for linked in edge.link_faces
+            if linked.index != face.index and linked.index in index_set
+        ) == 1
+    ]
+    # Closed loop (no ends) or branching (handled above) → not linear
+    return len(ends) >= 1
+
+
+def project_face_independent(face, uv_layer, world_matrix):
+    """Project a single face using its own normal-derived axes, centred on
+    its own bounding box. Used as fallback for triangulated geometry where
+    edge-stitching is unreliable."""
+    u_axis, v_axis = get_face_axes(face, world_matrix)
+    loops          = list(face.loops)
+    world_verts    = {loop.vert.index: world_matrix @ loop.vert.co for loop in loops}
+    raw = {
+        loop.vert.index: (
+            world_verts[loop.vert.index].dot(u_axis),
+            world_verts[loop.vert.index].dot(v_axis),
+        )
+        for loop in loops
+    }
+    u_vals   = [uv[0] for uv in raw.values()]
+    v_vals   = [uv[1] for uv in raw.values()]
+    u_centre = (min(u_vals) + max(u_vals)) / 2.0
+    v_centre = (min(v_vals) + max(v_vals)) / 2.0
+    for loop in loops:
+        u, v = raw[loop.vert.index]
+        loop[uv_layer].uv = (u - u_centre, v - v_centre)
+
+
+def project_wall_group(group, uv_layer, world_matrix):
+    """
+    Unroll a connected wall or chain strip by stitching faces edge-to-edge.
+    Each face uses its own normal-derived axes — no distortion on curves.
+    V is always world Z for consistency. Orientation never changes.
+    """
+    chain     = sort_face_chain(group)
+    prev_face = None
+    prev_uv   = {}   # vert index → UV from the previous face's shared edge
+
+    for i, face in enumerate(chain):
+        u_axis, v_axis = get_face_axes(face, world_matrix)
+        loops          = list(face.loops)
+        world_verts    = {loop.vert.index: world_matrix @ loop.vert.co for loop in loops}
+
+        raw = {
+            loop.vert.index: (
+                world_verts[loop.vert.index].dot(u_axis),
+                world_verts[loop.vert.index].dot(v_axis),
+            )
+            for loop in loops
+        }
+
+        if i == 0:
+            v_vals   = [uv[1] for uv in raw.values()]
+            v_centre = (min(v_vals) + max(v_vals)) / 2.0
+            u_min    = min(uv[0] for uv in raw.values())
+            for loop in loops:
+                u, v = raw[loop.vert.index]
+                loop[uv_layer].uv = (u - u_min, v - v_centre)
+                prev_uv[loop.vert.index] = loop[uv_layer].uv.copy()
+        else:
+            shared = get_shared_edge_loops(face, prev_face)
+            if shared and all(loop.vert.index in prev_uv for loop in shared):
+                offsets_u = []
+                offsets_v = []
+                for loop in shared:
+                    vid = loop.vert.index
+                    tu, tv = prev_uv[vid]
+                    ru, rv = raw[vid]
+                    offsets_u.append(tu - ru)
+                    offsets_v.append(tv - rv)
+                du = sum(offsets_u) / len(offsets_u)
+                dv = sum(offsets_v) / len(offsets_v)
+            else:
+                prev_u_max = max(uv[0] for uv in prev_uv.values())
+                u_min      = min(uv[0] for uv in raw.values())
+                du = prev_u_max - u_min
+                dv = 0.0
+
+            for loop in loops:
+                u, v = raw[loop.vert.index]
+                loop[uv_layer].uv = (u + du, v + dv)
+                prev_uv[loop.vert.index] = loop[uv_layer].uv.copy()
+
+        prev_face = face
+
+
+def project_floor_group(group, uv_layer, world_matrix):
+    """Project a floor/ceiling group using world X/Y axes, centred on its bounding box."""
+    u_axis  = Vector((1.0, 0.0, 0.0))
+    v_axis  = Vector((0.0, 1.0, 0.0))
+    all_wco = [world_matrix @ loop.vert.co for face in group for loop in face.loops]
+    all_u   = [v.dot(u_axis) for v in all_wco]
+    all_v   = [v.dot(v_axis) for v in all_wco]
+    cu      = (min(all_u) + max(all_u)) / 2.0
+    cv      = (min(all_v) + max(all_v)) / 2.0
+    for face in group:
+        for loop in face.loops:
+            wco = world_matrix @ loop.vert.co
+            loop[uv_layer].uv = (wco.dot(u_axis) - cu, wco.dot(v_axis) - cv)
+
+
+# ─── Lightmap ─────────────────────────────────────────────────────────────────
+
+def ensure_lightmap_channel(mesh, force_regenerate, obj=None):
+    """Create or regenerate LightmapUVs channel.
+    
+    obj: the bpy.types.Object owner of the mesh — required to run the
+    lightmap_pack operator which needs an active object in Edit mode.
+    If obj is None and the operator context is unavailable, a blank UV
+    layer is created without packing (still valid for UE5).
+    """
+    existing = mesh.uv_layers.get(LIGHTMAP_CHANNEL_NAME)
+    if existing and not force_regenerate:
+        return False
+    if not existing:
+        mesh.uv_layers.new(name=LIGHTMAP_CHANNEL_NAME)
+
+    # lightmap_pack requires Edit mode on the active object
+    if obj is None:
+        # No object context — layer created but not packed, acceptable fallback
+        return True
+
+    prev_active = mesh.uv_layers.active
+    mesh.uv_layers.active = mesh.uv_layers[LIGHTMAP_CHANNEL_NAME]
+
+    prev_mode = obj.mode
+    try:
+        bpy.context.view_layer.objects.active = obj
+        if prev_mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.uv.lightmap_pack(
+            'EXEC_DEFAULT',
+            PREF_CONTEXT='ALL_FACES',
+            PREF_PACK_IN_ONE=True,
+            PREF_NEW_UVLAYER=False,
+            PREF_MARGIN_DIV=0.1,
+        )
+    finally:
+        if prev_mode != 'EDIT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        if prev_active:
+            mesh.uv_layers.active = prev_active
+
+    return True
+
+
+# ─── Core unwrap ──────────────────────────────────────────────────────────────
+
+def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
+    """
+    Unwrap one mesh object.
+
+    Face routing:
+      Floor/Ceiling  → world Z projection
+      Wall/Trim      → per-face normal, edge-stitched strip
+      Chain_NN       → per-face normal, edge-stitched strip, grouped by chain
+                       number first then by connectivity — each connected
+                       component within a chain number is its own UV island.
+                       Material boundary = hard island boundary even if
+                       geometry is physically connected.
+      Ignore         → skipped
+      No M_FBXMT mat → skipped
+    """
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+    bm.verts.ensure_lookup_table()
+
+    # Always write to the named diffuse UV layer, not whatever happens to be
+    # active — active could be LightmapUVs or any other layer.
+    uv_layer_name = "UVMap"
+    uv_layer = bm.loops.layers.uv.get(uv_layer_name)
+    if uv_layer is None:
+        uv_layer = bm.loops.layers.uv.new(uv_layer_name)
+
+    floor_faces = []
+    wall_faces  = []
+    # chain_faces: dict of chain_name → [BMFace, ...]
+    chain_faces = {}
+
+    # Get which chain material names are actually slotted on this mesh
+    chain_names_on_mesh = {
+        m.name for m in mesh.materials
+        if m and is_chain_mat_name(m.name)
+    }
+
+    for face in bm.faces:
+        if selected_only and not face.select:
+            continue
+        mat_name = get_face_material_name(face, mesh)
+        if mat_name in FBXMT_FLOOR_MATERIALS:
+            floor_faces.append(face)
+        elif mat_name in FBXMT_WALL_MATERIALS:
+            wall_faces.append(face)
+        elif mat_name and is_chain_mat_name(mat_name) and mat_name in chain_names_on_mesh:
+            chain_faces.setdefault(mat_name, []).append(face)
+        # FBXMT_IGNORE_MATERIAL and unrecognised → skip
+
+    all_groups = []
+
+    # Floors / ceilings
+    for group in find_connected_groups(floor_faces):
+        project_floor_group(group, uv_layer, world_matrix)
+        all_groups.append(group)
+
+    # Standard walls — linear strips get edge-stitched as one island.
+    # Non-linear (triangulated) groups get per-face independent projection,
+    # each face as its own island so the packer can place them without overlap.
+    for group in find_connected_groups(wall_faces):
+        if _is_linear_chain(group):
+            project_wall_group(group, uv_layer, world_matrix)
+            all_groups.append(group)
+        else:
+            for face in group:
+                project_face_independent(face, uv_layer, world_matrix)
+                all_groups.append([face])
+
+    # Chain islands — each chain number processed separately so material
+    # boundaries are respected, then connectivity splits within each number
+    # Chain faces always unroll as connected strips.
+    for chain_name in sorted(chain_faces.keys(), key=lambda n: _chain_index(n)):
+        faces = chain_faces[chain_name]
+        for group in find_connected_groups(faces):
+            project_wall_group(group, uv_layer, world_matrix)
+            all_groups.append(group)
+    pack_islands(bm, uv_layer, all_groups)
+
+    # Zero out UV loops on faces that were skipped (Ignore, unrecognised).
+    # Leaves them at (0,0) in the UV editor rather than showing stale data.
+    packed_faces = {face.index for group in all_groups for face in group}
+    for face in bm.faces:
+        if face.index not in packed_faces:
+            for loop in face.loops:
+                loop[uv_layer].uv = (0.0, 0.0)
+
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+    total_chain = sum(len(v) for v in chain_faces.values())
+    return len(floor_faces) + len(wall_faces) + total_chain
+
+
+# ─── UV Map List Operators ────────────────────────────────────────────────────
+
+class OT_FBXMT_UV_Add(Operator):
+    bl_idname = "fbxmt.uv_add"
+    bl_label = "Add UV Map"
+    bl_description = "Add a new UV map to the active object"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object and context.active_object.type == 'MESH'
+
+    def execute(self, context):
+        context.active_object.data.uv_layers.new(name="UVMap")
+        return {'FINISHED'}
+
+
+class OT_FBXMT_UV_Remove(Operator):
+    bl_idname = "fbxmt.uv_remove"
+    bl_label = "Remove UV Map"
+    bl_description = "Remove the active UV map from the active object"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj and obj.type == 'MESH' and len(obj.data.uv_layers) > 0
+
+    def execute(self, context):
+        mesh   = context.active_object.data
+        active = mesh.uv_layers.active
+        if active and active.name == LIGHTMAP_CHANNEL_NAME:
+            self.report({'WARNING'}, f'{LIGHTMAP_CHANNEL_NAME} is protected - remove via Clear UV Maps if intentional')
+            return {'CANCELLED'}
+        if active:
+            mesh.uv_layers.remove(active)
+        return {'FINISHED'}
+
+
+# ─── Main Unwrap Operator ─────────────────────────────────────────────────────
+
+class OT_FBXMT_UV_Unwrap(Operator):
+    bl_idname = "fbxmt.uv_unwrap"
+    bl_label = "Mapper UV Unwrap"
+    bl_description = (
+        "Object mode: unwrap all M_FBXMT-material faces on selected objects. "
+        "Edit mode: unwrap selected M_FBXMT-material faces only. "
+        "Faces with no M_FBXMT material are skipped."
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        if context.mode == 'OBJECT':
+            return any(obj.type == 'MESH' for obj in context.selected_objects)
+        if context.mode == 'EDIT_MESH':
+            return context.active_object and context.active_object.type == 'MESH'
+        return False
+
+    def execute(self, context):
+        props               = context.scene.fbxmt_props
+        floor_threshold_dot = math.cos(math.radians(props.uv_floor_threshold))
+        edit_mode           = context.mode == 'EDIT_MESH'
+
+        if edit_mode:
+            obj = context.active_object
+            bpy.ops.object.mode_set(mode='OBJECT')
+            count = unwrap_mesh(
+                obj.data, obj.matrix_world, floor_threshold_dot, selected_only=True
+            )
+            bpy.ops.object.mode_set(mode='EDIT')
+            self.report({'INFO'}, f"Unwrapped {count} selected face(s)")
+        else:
+            mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+            total = 0
+            for obj in mesh_objects:
+                total += unwrap_mesh(
+                    obj.data, obj.matrix_world, floor_threshold_dot, selected_only=False
+                )
+            self.report({'INFO'}, f"Unwrapped {total} face(s) across {len(mesh_objects)} object(s)")
+
+        return {'FINISHED'}

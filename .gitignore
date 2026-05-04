@@ -1,0 +1,25 @@
+# Blender
+*.blend
+*.blend1
+*.blend2
+
+# Build artifacts
+*.zip
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exported assets (not source)
+Export/
+Textures/
