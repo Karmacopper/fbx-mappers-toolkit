@@ -7,9 +7,12 @@ from .materials import (
     FBXMT_FLOOR_MATERIALS,
     FBXMT_WALL_MATERIALS,
     FBXMT_IGNORE_MATERIAL,
+    ISLAND_SUB_PREFIX,
+    _island_sub_index,
+    LIGHTMAP_CHANNEL_NAME,
+    # Legacy chain imports kept for old blend files
     CHAIN_PREFIX,
     _chain_index,
-    LIGHTMAP_CHANNEL_NAME,
 )
 from .uv_pack import pack_islands
 
@@ -24,15 +27,21 @@ def get_face_material_name(face, mesh):
     return None
 
 
+def is_island_sub_name(name):
+    """True for M_FBXMT_Island_NN hidden sub-materials."""
+    return name is not None and name.startswith(ISLAND_SUB_PREFIX) and _island_sub_index(name) is not None
+
+
+def get_island_sub_names_on_mesh(mesh):
+    """Sorted list of island sub-material names present in this mesh's slots."""
+    names = [m.name for m in mesh.materials if m and is_island_sub_name(m.name)]
+    names.sort(key=lambda n: _island_sub_index(n))
+    return names
+
+
+# Legacy shims
 def is_chain_mat_name(name):
     return name is not None and name.startswith(CHAIN_PREFIX) and _chain_index(name) is not None
-
-
-def get_chain_mat_names_on_mesh(mesh):
-    """Sorted list of chain material names present in this mesh's slots."""
-    names = [m.name for m in mesh.materials if m and is_chain_mat_name(m.name)]
-    names.sort(key=lambda n: _chain_index(n))
-    return names
 
 
 # ─── Connectivity ─────────────────────────────────────────────────────────────
@@ -334,12 +343,17 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
     if uv_layer is None:
         uv_layer = bm.loops.layers.uv.new(uv_layer_name)
 
-    floor_faces = []
-    wall_faces  = []
-    # chain_faces: dict of chain_name → [BMFace, ...]
-    chain_faces = {}
+    floor_faces  = []
+    wall_faces   = []
+    # island_faces: dict of sub-material name → [BMFace, ...]
+    island_faces = {}
 
-    # Get which chain material names are actually slotted on this mesh
+    # Which island sub-material names are slotted on this mesh
+    island_sub_on_mesh = {
+        m.name for m in mesh.materials
+        if m and is_island_sub_name(m.name)
+    }
+    # Legacy chain support — treat old chain mats the same as island subs
     chain_names_on_mesh = {
         m.name for m in mesh.materials
         if m and is_chain_mat_name(m.name)
@@ -353,9 +367,12 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
             floor_faces.append(face)
         elif mat_name in FBXMT_WALL_MATERIALS:
             wall_faces.append(face)
+        elif mat_name and is_island_sub_name(mat_name) and mat_name in island_sub_on_mesh:
+            island_faces.setdefault(mat_name, []).append(face)
         elif mat_name and is_chain_mat_name(mat_name) and mat_name in chain_names_on_mesh:
-            chain_faces.setdefault(mat_name, []).append(face)
-        # FBXMT_IGNORE_MATERIAL and unrecognised → skip
+            # Legacy chain materials — treat as island subs
+            island_faces.setdefault(mat_name, []).append(face)
+        # FBXMT_IGNORE_MATERIAL, M_FBXMT_Island marker, unrecognised → skip
 
     all_groups = []
 
@@ -365,8 +382,7 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
         all_groups.append(group)
 
     # Standard walls — linear strips get edge-stitched as one island.
-    # Non-linear (triangulated) groups get per-face independent projection,
-    # each face as its own island so the packer can place them without overlap.
+    # Non-linear (triangulated) groups get per-face independent projection.
     for group in find_connected_groups(wall_faces):
         if _is_linear_chain(group):
             project_wall_group(group, uv_layer, world_matrix)
@@ -376,18 +392,17 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
                 project_face_independent(face, uv_layer, world_matrix)
                 all_groups.append([face])
 
-    # Chain islands — each chain number processed separately so material
-    # boundaries are respected, then connectivity splits within each number
-    # Chain faces always unroll as connected strips.
-    for chain_name in sorted(chain_faces.keys(), key=lambda n: _chain_index(n)):
-        faces = chain_faces[chain_name]
+    # Island faces — each sub-material processed separately so the
+    # auto-coloured boundaries are respected as hard island boundaries.
+    for sub_name in sorted(island_faces.keys(), key=lambda n: (_island_sub_index(n) or _chain_index(n) or 0)):
+        faces = island_faces[sub_name]
         for group in find_connected_groups(faces):
             project_wall_group(group, uv_layer, world_matrix)
             all_groups.append(group)
+
     pack_islands(bm, uv_layer, all_groups)
 
-    # Zero out UV loops on faces that were skipped (Ignore, unrecognised).
-    # Leaves them at (0,0) in the UV editor rather than showing stale data.
+    # Zero out UV loops on skipped faces (Ignore, unrecognised, bare marker).
     packed_faces = {face.index for group in all_groups for face in group}
     for face in bm.faces:
         if face.index not in packed_faces:
@@ -398,8 +413,8 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
     bm.free()
     mesh.update()
 
-    total_chain = sum(len(v) for v in chain_faces.values())
-    return len(floor_faces) + len(wall_faces) + total_chain
+    total_island = sum(len(v) for v in island_faces.values())
+    return len(floor_faces) + len(wall_faces) + total_island
 
 
 # ─── UV Map List Operators ────────────────────────────────────────────────────
@@ -455,10 +470,10 @@ class OT_FBXMT_UV_Unwrap(Operator):
 
     @classmethod
     def poll(cls, context):
+        if context.mode == 'EDIT_MESH':
+            return False  # disabled in edit mode — causes materials to go black
         if context.mode == 'OBJECT':
             return any(obj.type == 'MESH' for obj in context.selected_objects)
-        if context.mode == 'EDIT_MESH':
-            return context.active_object and context.active_object.type == 'MESH'
         return False
 
     def execute(self, context):

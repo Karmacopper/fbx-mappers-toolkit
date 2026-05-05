@@ -1,13 +1,18 @@
 import bpy
+import re
 from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 from bpy.props import StringProperty, CollectionProperty
 from .materials import (
     ensure_fbxmt_materials,
+    rebuild_fbxmt_materials,
     FBXMT_MATERIALS,
     FBXMT_ALL_MATERIALS,
     FBXMT_IGNORE_MATERIAL,
-    _is_chain_material,
+    ISLAND_MARKER_NAME,
+    _is_island_material,
+    CHAIN_NAMES,           # legacy
+    _is_chain_material,    # legacy
     _get_prefs,
     add_fbxmt_slots,
     assign_trim_material,
@@ -16,6 +21,7 @@ from .materials import (
     COLLECTION_PROPS,
     COLLECTION_TRIM,
 )
+from . import materials as _mat_module
 
 # Module-level state for multi-file ask flow
 _pending_files = []
@@ -34,7 +40,33 @@ def get_newly_imported(before_names, import_type):
     new_objs  = [bpy.data.objects[n] for n in new_names
                  if bpy.data.objects[n].type == 'MESH']
 
+    # Build a lookup of canonical FBXMT material names (base name without .NNN suffix)
+    # so we can remap any M_FBXMT_*.001/.002 duplicates FBX import may have created
+    # back to the canonical data-block.
+    _all_fbxmt = set(FBXMT_ALL_MATERIALS) | {ISLAND_MARKER_NAME} | set(CHAIN_NAMES)
+    _canonical  = {name: bpy.data.materials.get(name) for name in _all_fbxmt}
+
     for obj in new_objs:
+        # Remap any M_FBXMT_*.NNN duplicate slots to their canonical data-block.
+        # FBX import creates .001/.002 copies when materials with those names already
+        # exist in the scene. Replace them in-place and remove the orphaned duplicate.
+        # If any remapping happens, reinject the full FBXMT slot set — this is FBXMT
+        # geometry and should have all materials available.
+        mesh    = obj.data
+        reinjected = False
+        for i, mat in enumerate(mesh.materials):
+            if mat is None:
+                continue
+            base = re.sub(r'\.\d+$', '', mat.name)
+            if base in _canonical and _canonical[base] is not None and mat != _canonical[base]:
+                orphan = mat
+                mesh.materials[i] = _canonical[base]
+                if orphan.users == 0:
+                    bpy.data.materials.remove(orphan)
+                reinjected = True
+        if reinjected:
+            add_fbxmt_slots(obj)
+
         if import_type == 'GEO':
             add_fbxmt_slots(obj)
             move_to_collection(obj, COLLECTION_GEO)
@@ -52,10 +84,8 @@ def get_newly_imported(before_names, import_type):
         import bmesh as _bmesh
         from mathutils import Vector as _Vector
         from .uv_unwrap import unwrap_mesh, ensure_lightmap_channel
-        from .materials import (
-            FBXMT_MATERIALS, FBXMT_IGNORE_MATERIAL, FBXMT_ALL_MATERIALS,
-            _is_chain_material, ensure_fbxmt_materials,
-        )
+        # FBXMT_MATERIALS, FBXMT_IGNORE_MATERIAL, FBXMT_ALL_MATERIALS,
+        # _is_chain_material already imported at module level above
         from . import materials as _mat_module
 
         scene               = bpy.context.scene
@@ -74,6 +104,7 @@ def get_newly_imported(before_names, import_type):
                 slots_to_remove = [
                     i for i, slot in enumerate(mesh.materials)
                     if slot and slot.name not in FBXMT_ALL_MATERIALS
+                    and not _is_island_material(slot)
                     and not _is_chain_material(slot)
                 ]
                 for i in reversed(slots_to_remove):
@@ -104,6 +135,7 @@ def get_newly_imported(before_names, import_type):
                         if face.material_index < len(mesh.materials) else None
                     )
                     if current and (current.name == FBXMT_IGNORE_MATERIAL
+                                    or _is_island_material(current)
                                     or _is_chain_material(current)):
                         continue
                     world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
@@ -163,6 +195,14 @@ class OT_FBXMT_Import_FBX(Operator, ImportHelper):
     import_type:   StringProperty(default='NONE')
     filename_ext = ".fbx"
 
+    def invoke(self, context, event):
+        # Pre-fill the file browser with the stored import path if set
+        import_path = getattr(context.scene.fbxmt_props, 'import_path', '')
+        if import_path and os.path.isdir(import_path):
+            self.directory = import_path
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
+
     def execute(self, context):
         import os
 
@@ -183,6 +223,12 @@ class OT_FBXMT_Import_FBX(Operator, ImportHelper):
             bpy.ops.import_scene.fbx(filepath=filepath)
             new_objs = get_newly_imported(before, self.import_type)
             total   += len(new_objs)
+
+        # Rebuild material node trees after all objects are in the scene
+        # with slots assigned — only runs once per session unless a deliberate
+        # user action (Rebuild, texel density, checker scale) resets the flag.
+        if not _mat_module._materials_built:
+            rebuild_fbxmt_materials()
 
         label = self.import_type.lower() if self.import_type != 'NONE' else 'as-is'
         self.report({'INFO'}, f"Imported {len(files)} file(s), {total} object(s) - {label}")

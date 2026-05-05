@@ -45,23 +45,26 @@ class OT_FBXMT_Save_Template(Operator):
         from .materials import (
             ensure_collections,
             ensure_fbxmt_materials,
-            ensure_chain_01,
+            ensure_chain_materials,
         )
 
         template_dir  = _get_template_dir()
         template_file = os.path.join(template_dir, "startup.blend")
         os.makedirs(template_dir, exist_ok=True)
 
-        # Ensure the scene has collections and materials without wiping anything
+        # Ensure the scene has collections and all materials without wiping anything
         ensure_collections()
         ensure_fbxmt_materials()
-        ensure_chain_01()
+        ensure_chain_materials()
 
         # Set metric units
         scene = context.scene
         scene.unit_settings.system       = 'METRIC'
         scene.unit_settings.scale_length = 1.0
         scene.unit_settings.length_unit  = 'METERS'
+
+        # Flag the scene so load_post fires the Project Setup dialog on first open
+        scene.fbxmt_props.fbxmt_is_fresh_template = True
 
         # Save a copy of the current scene to the template location
         bpy.ops.wm.save_as_mainfile(filepath=template_file, copy=True)

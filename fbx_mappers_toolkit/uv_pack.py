@@ -21,7 +21,7 @@ from collections import namedtuple
 # Public API
 # ---------------------------------------------------------------------------
 
-MARGIN = 0.02  # UV-unit gap between islands
+MARGIN = 0.0   # UV-unit gap between islands — zero for seamless tiling
 
 
 def pack_islands(bm, uv_layer, groups):

@@ -1,4 +1,4 @@
-FBX Mapper's Toolkit v2.6.7
+FBX Mapper's Toolkit v2.7.0
 For Blender 5.1+ - Unreal Engine 5 Map Geometry Workflow
 
 Original exporter by Ja5mine (2021)
@@ -29,12 +29,12 @@ experience is the same: assign a surface type, run the unwrap, done.
 The output is a static mesh UV map that UE5's Lumen, Nanite, and
 lightmass pipelines can use correctly.
 
-The island chain system is the one addition that has no UnrealEd
+The island marker system is the one addition that has no UnrealEd
 equivalent. BSP never needed to think about island boundaries because
-it never packed anything. Chains are how you tell the unwrapper where
-one UV island ends and the next begins - for the cases where long wall
-runs or curved sections need splitting for packing economy. Everything
-else is automated.
+it never packed anything. The island marker is how you tell the unwrapper
+where one UV island ends and the next begins - for the cases where long
+wall runs or curved sections need splitting for packing economy.
+Everything else is automated.
 
 See UV UNWRAPPING PHILOSOPHY for the full technical detail.
 
@@ -42,7 +42,7 @@ See UV UNWRAPPING PHILOSOPHY for the full technical detail.
 INSTALLATION
 ------------------------------------------------------------------------
 
-Edit > Preferences > Add-ons > Install from Disk → select the .zip
+Edit > Preferences > Add-ons > Install from Disk -> select the .zip
 Find "FBX Mapper's Toolkit" in the list and enable it.
 Panel appears in the N-shelf (press N in 3D viewport) under "FBX Toolkit".
 
@@ -54,53 +54,64 @@ WORKFLOW
    - Hit "Setup Scene" - creates Geo, Props, Trim collections and adds
      all M_FBXMT materials to the blend
    - Set your Geo Texel Density (default 1024 texels/m)
-   - Enable "Auto-Add Materials to New Objects" if desired
+   - Configure material colours and checker patterns in the Materials
+     panel (see MATERIAL COLOURS AND PATTERNS below)
 
 2. IMPORT (optional)
    - Use the Import dropdown to bring in FBX files
    - Import as Geo: adds M_FBXMT material slots, moves to Geo collection
    - Import as Trim: adds slots + assigns M_FBXMT_Trim, moves to Trim
    - Import as Prop: imports as-is, moves to Props collection
-   - Import and Ask: per-file dialog for mixed batches
+   - Set a default Import Folder in the Import panel to pre-fill the
+     file browser on Quick Import
 
 3. MATERIAL ASSIGNMENT
-   - In Edit mode, select faces you want to exclude → assign M_FBXMT_Ignore
+   - In Edit mode, select faces you want to exclude -> assign M_FBXMT_Ignore
    - Hit "Auto-Assign to Faces" - floors, ceilings and walls assigned
      automatically by world-space normal direction
-   - Ignore and chain-marked faces are never overwritten by auto-assign
+   - Ignore and island-marked faces are never overwritten by auto-assign
 
-4. ISLAND CHAIN MARKING (optional - see UV UNWRAPPING PHILOSOPHY)
+4. ISLAND MARKING (optional - see UV UNWRAPPING PHILOSOPHY)
    - Only required for meshes with long wall runs or curved sections that
      need manual island splitting
-   - With a mesh object active, hit "+" in the Island Chain Materials list
-     to generate M_FBXMT_Chain_01, _02, etc.
-   - In Edit mode, select the faces you want as one island and assign the
-     appropriate chain material
-   - Chain_01 is always present and locked - it is the baseline island
-     marker. Additional chains split the run into separate UV islands.
+   - Select the faces you want as one island in Edit mode
+   - Assign M_FBXMT_Island to those faces
+   - Auto-colouring fires immediately on assign - adjacent islands are
+     automatically assigned distinct hidden sub-materials so the unwrapper
+     can tell them apart. No manual numbering required.
+   - Hit "Auto-Colour Islands" in the panel at any time to reprocess
 
 5. UV UNWRAP
    - Select objects in Object mode
    - Hit "Unwrap Selected Objects"
    - Or enter Edit mode, select specific faces, hit "Unwrap Selected Faces"
    - Faces with no M_FBXMT material are skipped (UVs left untouched)
+   - Unwrap is disabled in Edit Mode at the object level to prevent
+     materials appearing black during the operation
 
-6. EXPORT
+6. PROJECT SETUP (optional)
+   - Open Project Setup from the Scene Setup panel
+   - Bake All generates 128px preview tiles for all 6 materials
+   - Contact Sheet composites all tiles into a single reference image
+     and saves it to MaterialCache/ alongside the blend file
+
+7. EXPORT
    - Set export folder in the Scene Setup panel (saved per blend file)
    - Tick UCX Collision if needed
    - Lightmap is guaranteed - created if missing, regenerated if ticked
    - UV channel order is enforced: 0 = diffuse, 1 = LightmapUVs
-   - A sanity check runs before export - objects with chain materials
-     but missing Chain_01 in their slots will trigger a warning
    - Hit "Export Selected"
+   - On export, island sub-materials are replaced by surface-detected
+     base materials (Wall/Floor/Ceiling) before the FBX write, then
+     stripped. Island markers never ship in the exported file.
+   - Full-resolution texture bake to Textures/ runs on export
 
 STARTUP TEMPLATE
-   - Set up your scene as desired (colours, texel density, export folder)
+   - Set up your scene as desired (colours, patterns, texel density,
+     export folder)
    - Hit "Save Startup Template" in the Scene Setup panel
    - Restart Blender
    - "FBX Mapper Toolkit" appears under File > New and in the splash screen
-   - The template captures all per-scene preferences (checker colours,
-     workflow defaults) since they are stored on the Scene
 
 ------------------------------------------------------------------------
 MATERIALS
@@ -108,29 +119,74 @@ MATERIALS
 
 BASE MATERIALS (always present, auto-assigned by normal direction)
 
-  M_FBXMT_Floor    - horizontal upward-facing surfaces (green checker)
-  M_FBXMT_Ceiling  - horizontal downward-facing surfaces (blue checker)
-  M_FBXMT_Wall     - vertical surfaces (amber checker)
-  M_FBXMT_Trim     - edge detail, wear-stoppers (lilac checker)
-  M_FBXMT_Ignore   - excluded from unwrap entirely (grey checker)
+  M_FBXMT_Floor    - horizontal upward-facing surfaces
+  M_FBXMT_Ceiling  - horizontal downward-facing surfaces
+  M_FBXMT_Wall     - vertical surfaces
+  M_FBXMT_Trim     - edge detail, wear-stoppers
+  M_FBXMT_Ignore   - excluded from unwrap entirely
 
-All base materials use procedural node-based checkerboard shaders -
-no texture files. The checker pattern, corner cross markers, scale,
-and colours are all configurable in the Preferences panel and applied
-on Rebuild. There are no PNG assets to replace.
+All base materials use procedural node-based shaders - no texture files.
+The checker pattern, corner cross markers, scale, colours and patterns
+are all configurable per-material and applied on Rebuild. No PNG assets.
 
-ISLAND CHAIN MATERIALS (user-generated, optional)
+ISLAND MARKER MATERIAL
 
-  M_FBXMT_Chain_01 - locked baseline island marker (blue+orange checker)
-  M_FBXMT_Chain_02
-  M_FBXMT_Chain_NN - additional chain differentiators (blue+chosen colour)
+  M_FBXMT_Island   - visible marker painted by the artist
 
-Chain materials are procedural checkerboards generated from the Materials
-panel. Each uses the same blue tile paired with a user-chosen colour B
-(lightness normalised to match the blue tile for visual consistency).
-Chain_01 is always present and cannot be deleted - it is the foundation
-of the island system. Additional chains are generated on demand and
-numbered sequentially, with gaps filled before the sequence extends.
+  M_FBXMT_Island_01 through M_FBXMT_Island_15 - hidden sub-materials
+  assigned automatically by the graph colourer. Never visible in the
+  panel, never baked, never exported.
+
+Island markers always display with Wall Colour A and incrementally darker
+grey B values per island, giving immediate visual feedback on island
+boundaries. The Colour A for island materials is always derived from
+Wall Colour A - they are wall-type surfaces by definition.
+
+On export, all island sub-material faces are re-detected by face normal
+and assigned the appropriate base material before the FBX write.
+
+------------------------------------------------------------------------
+MATERIAL COLOURS AND PATTERNS
+------------------------------------------------------------------------
+
+Each of the 6 visible materials has its own colour and pattern settings,
+accessible by selecting a material in the Materials list in the N-panel.
+Settings appear in a box below the list. Hit "Update Material" to
+rebuild that material's node tree.
+
+CHECKER PATTERN
+
+  Square    - standard checkerboard (default)
+  Diagonal  - each square bisected diagonally, A and B colour the triangles
+  Diamond   - each square split into 4 triangles (N/S = A, E/W = B),
+              producing a diamond/argyle appearance
+
+All three patterns use the same A/B colour pair and the same corner
+marker system. Pattern is set per material giving three independent axes
+of visual differentiation: hue, lightness, and pattern shape.
+
+COLOUR A
+
+Always a free colour picker. No constraints.
+Exception: Island Marker Colour A always tracks Wall Colour A.
+
+COLOUR B MODE
+
+  Manual         - free colour picker, no processing applied
+  Lighter/Darker - 7-position slider. Centre (position 4) = same
+                   lightness as A. Positions 1-3 = darker, 5-7 = lighter.
+  Greyscale      - 5-position slider: Black / 25% / 50% / 75% / White.
+  Inverse        - complementary hue of A, computed, no control needed.
+
+CORNER MARKERS
+
+Cross markers appear at texel tile corners (not checker square corners).
+
+  Corner Mark Length    - arm length as % of tile (4 presets: 12.5-50%)
+  Corner Mark Width     - arm width in pixels at 1024tx/m density
+  Show Corner Circle    - quarter-circle arc at each corner
+  Corner Line Hue Shift - hue rotation on marker colour (default 180 =
+                          inverted checker for max contrast)
 
 ------------------------------------------------------------------------
 UV UNWRAPPING PHILOSOPHY
@@ -138,143 +194,87 @@ UV UNWRAPPING PHILOSOPHY
 
 The unwrap approach in this toolkit is specifically designed for game-
 level architecture and differs significantly from general-purpose UV
-unwrapping tools. Understanding the intent is essential to using it
-correctly.
+unwrapping tools.
 
 THE CORE PROBLEM
 
 A typical game environment wall mesh might contain 200 or more vertical
 faces arranged as a continuous perimeter - straight runs, corners, and
 curved sections all connected. A naive unwrap produces either one
-enormous island (wasteful, awkward to texture) or arbitrary cuts that
-break texture continuity. Neither is acceptable for a shipping level.
+enormous island or arbitrary cuts that break texture continuity.
 
 THE APPROACH
-
-The toolkit separates faces into categories by purpose, then applies the
-most appropriate projection to each:
 
   Floors and ceilings  - projected from world Z, preserving real-world
                          scale and alignment to world X/Y axes.
 
   Walls and trim       - projected per face from its own normal, with
-                         world Z locked as the UV vertical axis. This
-                         means wall UVs always read upright regardless
-                         of which direction the wall faces. Faces are
-                         then stitched edge-to-edge into contiguous
-                         strips before packing.
+                         world Z locked as the UV vertical axis. Wall
+                         UVs always read upright regardless of direction.
+                         Faces stitched edge-to-edge into strips before
+                         packing.
 
-  Island chain faces   - treated identically to walls in projection
-                         terms, but the chain material number acts as
-                         a hard island boundary. Two adjacent faces
-                         with different chain numbers are always
-                         separate UV islands, even if they share an
-                         edge. Within the same chain number,
-                         connectivity determines islands - disconnected
-                         geometry becomes separate islands naturally.
+  Island-marked faces  - treated identically to walls in projection,
+                         but island sub-material boundaries are hard
+                         island boundaries. Two adjacent faces with
+                         different sub-materials are always separate UV
+                         islands even if they share an edge.
 
-WHY CHAINS INSTEAD OF SEAMS
+WHY THE ISLAND MARKER INSTEAD OF SEAMS
 
-Blender seams define where a mesh can be cut. They are a per-edge
-property that is easy to place accidentally, difficult to audit at
-scale, and invisible at a glance when reviewing many objects. For a
-200-face wall loop with 40 curves, managing seams is fragile.
+Blender seams are per-edge, easy to place accidentally, difficult to
+audit at scale, and invisible at a glance. For a 200-face wall loop,
+managing seams is fragile.
 
-Chain materials solve this differently. The material assigned to a face
-is immediately visible in the viewport, auditable in the material list,
-and persistent across mesh edits. Selecting all faces with a given
-material is a single operation. The boundary between chain numbers is
-explicit and intentional - you are not cutting, you are categorising.
+The island marker solves this differently. The material assigned to a
+face is immediately visible in the viewport, auditable in the material
+list, and persistent across mesh edits. The boundary between islands is
+explicit - you are not cutting, you are categorising. Auto-colouring
+means you never need to think about which number goes where - paint the
+marker, the system handles the rest.
 
-WHEN TO USE CHAIN MATERIALS
+HOW AUTO-COLOURING WORKS
 
-Not every mesh needs them. Simple box rooms, flat wall segments, and any
-geometry where the auto-unwrap produces acceptable results do not require
-chain marking. Do not add chain slots to an object unless you intend to
-use them - Chain_01 only needs to be in a mesh's material slots if you
-are actively marking island chains on that mesh.
+When M_FBXMT_Island is assigned to faces, the system immediately:
+1. Finds all connected groups of island-marked faces (components)
+2. Builds an adjacency graph between components
+3. Assigns hidden sub-materials (Island_01-15) by greedy graph colouring
+   so no two adjacent components share the same sub-material
+4. Existing island components from previous runs are respected and not
+   recoloured - only newly marked faces get assigned
 
-Chain marking is for the cases the automation cannot solve:
+The four colour theorem guarantees four colours suffice for any planar
+quad mesh. Fifteen sub-materials provide headroom for complex geometry
+and non-planar cases.
+
+WHEN TO USE ISLAND MARKING
+
+Not every mesh needs it. Simple box rooms, flat wall segments, and any
+geometry where the auto-unwrap produces acceptable results do not need
+island marking.
+
+Island marking is for:
 
   - A curved wall section that must unroll as a single continuous strip
-    to avoid texture pinching at face boundaries
-
-  - A long straight run that would produce an impractically wide UV
-    island if left as one piece, needing a deliberate break point for
-    packing economy
-
+  - A long straight run needing a deliberate break point for packing
   - Any section where the artistic intent requires a specific island
     boundary that cannot be inferred from geometry alone
-
-In all these cases, the artist makes a deliberate decision about where
-one island ends and the next begins, marks it with a chain number, and
-the unwrapper respects that decision exactly. This is the part of the
-UV workflow that cannot be fully automated - the toolkit handles
-everything it can automatically and gives you a clean, auditable system
-for the rest.
-
-CHAIN MATERIAL DISCIPLINE
-
-Chain_01 is the baseline. It marks faces that belong to the island
-chain system but do not need to be separated from their connected
-neighbours - they will still split naturally at geometry boundaries.
-
-Chain_02, _03, and so on are break points. A face assigned Chain_02
-will never share a UV island with an adjacent face assigned Chain_01,
-even if they share an edge. Use additional chain numbers wherever you
-need a deliberate island split that geometry alone does not provide.
-
-The number itself carries no semantic meaning beyond ordering. Chain_02
-is not "more important" than Chain_01. It is simply "different from
-Chain_01 and therefore a separate island."
-
-For a simple linear wall run, two chain numbers are sufficient -
-alternate _01 and _02 along the strip and no island touches its
-neighbour. For more complex geometry with T-junctions, corners where
-multiple runs meet, or faces with more than two chain-marked neighbours,
-you need enough distinct numbers that no two adjacent chain faces share
-the same one. For quad meshes this is bounded by the four colour theorem
-- four chain numbers are sufficient to guarantee no chain material is
-adjacent to itself across any junction in any planar quad mesh.
-A fifth gives you headroom for deliberate double-breaks where packing
-economy demands it rather than adjacency. Beyond five, the geometry
-is probably complex enough to warrant splitting into separate objects.
-
-SANITY CHECKING
-
-The export operator checks for the following condition before exporting:
-any object that has chain materials assigned to faces but is missing
-Chain_01 from its material slots will be flagged with a warning. This
-condition produces incorrect UV islands - the unwrapper uses material
-boundaries to determine islands, so a missing chain slot means faces
-that should be in separate islands may be merged, or faces may be
-assigned to the wrong UV region.
-
-If you receive this warning, add Chain_01 to the object's material slots
-(use "Add to Active Object" in the Materials panel with Chain_01
-selected), then re-run the unwrap.
 
 ------------------------------------------------------------------------
 UV PACKING
 ------------------------------------------------------------------------
 
 Islands are packed using the Maximal Rectangles algorithm (Best Short
-Side Fit heuristic). The bin width is estimated by trying several
-candidate aspect ratios and choosing whichever produces output closest
-to square. No rotation is ever applied - wall face Z-up orientation is
-preserved at all times.
-
-UVs may extend beyond 1.0 on either axis. UE5 handles this correctly
-for tiling textures. Overlaps are never produced within a single object.
+Side Fit heuristic). No rotation is ever applied - wall face Z-up
+orientation is preserved at all times. UV packing margin is 0.0 for
+seamless tiling. UVs may extend beyond 1.0 on either axis.
 
 Algorithm reference:
-  Jylänki, J. (2010). "A Thousand Ways to Pack the Bin - A Practical
-  Approach to Two-Dimensional Rectangle Bin Packing."
+  Jylänki, J. (2010). "A Thousand Ways to Pack the Bin."
   http://clb.demon.fi/files/RectangleBinPack.pdf
 
-The implementation in uv_pack.py is an original Python implementation
-of the algorithm described in that paper. No code from any existing
-library was copied or adapted.
+The implementation in uv_pack.py is an original Python implementation.
+No code from any existing library was copied or adapted.
 
 ------------------------------------------------------------------------
 UCX COLLISION
@@ -282,7 +282,7 @@ UCX COLLISION
 
 When "Generate UCX Collision" is ticked, a copy of each exported mesh
 is included in the FBX prefixed with UCX_. UE5 detects this
-automatically as custom convex collision - no setup needed in UE.
+automatically as custom convex collision.
 
 ------------------------------------------------------------------------
 LIGHTMAP
@@ -290,10 +290,8 @@ LIGHTMAP
 
 Every export guarantees a LightmapUVs channel exists. With the toggle
 off, existing lightmaps are preserved. With the toggle on, a fresh
-lightmap is always generated using Blender's built-in lightmap pack.
-
-UV channel order is enforced on export: channel 0 = diffuse, channel 1
-= LightmapUVs, as UE5 expects.
+lightmap is generated. UV channel order enforced on export: channel 0 =
+diffuse, channel 1 = LightmapUVs.
 
 ------------------------------------------------------------------------
 PREFERENCES AND PROPERTY STORAGE
@@ -301,109 +299,70 @@ PREFERENCES AND PROPERTY STORAGE
 
 Preferences are in the N-panel, not Edit > Preferences.
 
-Open the 3D Viewport, press N, select the FBX Toolkit tab, expand
-Preferences. Edit > Preferences > Add-ons will show the addon entry
-but its panel is empty by design - it just points here.
-
-WHY NOT AddonPreferences?
-
-Blender 5.x extensions load under a prefixed package name at runtime
-(e.g. bl_ext.user_default.fbx_mappers_toolkit). AddonPreferences
-requires bl_idname to match the package name exactly, and that name
-differs between a local source install and a packaged extension. Storing
-preferences on the Scene as PointerProperties sidesteps this entirely.
+One exception: "Show Project Setup on New Project" lives in true
+AddonPreferences because it must persist across blend files.
 
 WHERE THE DATA LIVES
 
   Scene.fbxmt_prefs_global  (FBXMT_GlobalPrefs in props.py)
-    Addon-wide settings: checker appearance, material colours, import
-    workflow defaults. These are the same across a project - set once
-    in your startup template and leave them.
+    Checker appearance, per-material colours, patterns, colour B modes.
 
   Scene.fbxmt_props  (FBXMT_Props in props.py)
-    Per-scene operational values: export path, texel density, FBX scale
-    options, lightmap behaviour. These vary between projects and are
-    intentionally per-blend-file.
+    Export path, texel density, FBX scale options, lightmap behaviour,
+    import path, Project Setup state.
 
-Both PropertyGroups are defined in props.py, registered on bpy.types.Scene
-in __init__.py, and imported by panel.py for display. If you need to access
-them in code: context.scene.fbxmt_prefs_global and context.scene.fbxmt_props.
+------------------------------------------------------------------------
+KNOWN LIMITATIONS
+------------------------------------------------------------------------
 
-STARTUP TEMPLATE
+  - "Show Model" button in Project Setup is hidden. The preview render
+    operator exists but template_image cannot display outside the Image
+    Editor context.
 
-Use Save Startup Template in the Scene Setup panel to bake the current
-preferences into a startup .blend. From that point on, every new file
-inherits your preferred checker scale, texel density, colours and
-export settings without any manual setup.
+  - The eyedropper in the Project Setup dialog samples tile preview
+    icons if they are under the cursor. Use the N-panel colour pickers
+    for eyedropper work, or enter values numerically.
+
+  - Contact sheet save requires the blend file to have been saved first.
 
 ------------------------------------------------------------------------
 THIRD-PARTY ATTRIBUTIONS
 ------------------------------------------------------------------------
 
 UV Packing Algorithm
-  The MaxRects / Best Short Side Fit bin packing algorithm used in
-  uv_pack.py is an original implementation of the algorithm described in:
-
-    Jylänki, Jukka (2010). "A Thousand Ways to Pack the Bin - A
-    Practical Approach to Two-Dimensional Rectangle Bin Packing."
+  Original implementation of the algorithm described in:
+    Jylänki, Jukka (2010). "A Thousand Ways to Pack the Bin."
     Available at: http://clb.demon.fi/files/RectangleBinPack.pdf
+  No code from the reference implementation was used.
 
-  No code from Jylänki's C++ reference implementation (RectangleBinPack)
-  or any derived library was used. The paper is not licensed software;
-  citation is provided for academic credit only.
-
-All other code in this addon is original work licensed under GPL v3.
+All other code is original work licensed under GPL v3.
 
 ------------------------------------------------------------------------
 CHANGELOG
 ------------------------------------------------------------------------
 
-2.6.7  Fix: Preferences panel now correctly appears last in the
-       N-panel — registration order in classes tuple corrected.
+2.7.0  Feature: Island marker system replaces 5 chain materials.
+       M_FBXMT_Island is the single visible marker the artist assigns.
+       15 hidden sub-materials (M_FBXMT_Island_01-15) are assigned
+       automatically by adjacency graph colouring — no manual numbering.
+       Auto-colouring fires on assign; existing islands respected on
+       re-runs. Island Colour A always tracks Wall Colour A. On export,
+       island faces are surface-detected and replaced with base materials
+       before FBX write; island slots stripped.
+       Feature: Per-material checker patterns (Square / Diagonal /
+       Diamond). Diagonal bisects each square into two triangles.
+       Diamond produces a diamond/argyle pattern. Per material.
+       Feature: Per-material Colour B mode (Manual / Lighter-Darker 7-
+       notch / Greyscale 5-notch / Inverse). Derived at node-build time.
+       Feature: Project Setup bake is preview-only (128px). Full-res
+       bake to Textures/ is export-only.
+       Feature: N-panel per-material colour and pattern controls.
+       Fix: template_list crash (EXCEPTION_ACCESS_VIOLATION) — prop
+       mutation during draw re-enters layout system. Stale index now
+       clamped in load_post handler.
+       Fix: Contact sheet missing function, double-save, image buffer
+       errors on on-the-fly bake.
+       Fix: BakeAllModal was stripping all materials from scene.
+       Fix: Dead colour callbacks removed.
 
-2.6.6  QoL: Rebuild Materials button added to the bottom of the
-       Preferences panel — no more scrolling back up after tweaking
-       colours or checker settings.
-
-2.6.5  Housekeeping pass: duplicate bake_labels property in
-       FBXMT_GlobalPrefs removed. Duplicate OT_FBXMT_Set_Corner_Preset
-       import in __init__.py removed. Stale _get_prefs() docstring
-       corrected. Backslash line continuations in fbx_import.py
-       replaced with parenthesised expressions. Dead _collect_materials
-       static method removed from OT_FBXMT_Export. Scene Setup panel
-       "Reset Scene to Defaults" button removed — redundant now that
-       the startup template is the established first-run workflow.
-       Version strings corrected across __init__.py, blender_manifest.toml,
-       and readme.txt (were stuck at 2.5.6).
-
-2.5.6  Blender 5.1 node API fixes: ShaderNodeMixRGB replaced with
-       ShaderNodeMix (RGBA), ShaderNodeInvert replaced with DIFFERENCE
-       blend against white. math/bmesh/Vector promoted to module-level
-       imports in materials.py.
-
-2.4.x  Major refactor and review pass (2.4.0-2.4.4):
-       props.py extracted from panel.py - FBXMT_GlobalPrefs and
-       FBXMT_Props now have a dedicated file with full documentation.
-       Dead imports, stale constants, unnecessary aliases, empty
-       AddonPreferences panel, _ask_index reset bug, chain-push-to-all-
-       meshes, _enforce_uv_order O(layers) bmesh passes all fixed.
-       Em dash encoding fixed for Windows console output.
-
-2.3.x  Checker system rebuilt (2.3.0-2.3.9):
-       Two independent mapping paths: checker scale and tile corner
-       markers fully decoupled. Tile corners at texel tile boundaries
-       (geo_texel_density/1024), not at checker squares. Cross arms use
-       colour invert for maximum contrast. A+B colour pickers for all
-       base materials. checker_scale changed from EnumProperty to
-       IntProperty to fix Blender extension reload bug.
-
-2.2.x  Material panel rebuilt (2.2.0-2.2.9):
-       Surface Materials and Island Materials as two object-scoped
-       UILists with cross-list deselection. Assign and Select face
-       operators. Texel density consolidated to Scene Setup with live
-       tile size readout. Dead UV density props removed.
-
-2.1.x  Initial reviewed build (2.1.5-2.1.9):
-       PNG files removed, manifest fixed for Blender 5.1, dead imports
-       cleaned, no-op depsgraph handler unregistered, LightmapUVs
-       protected from removal.
+2.6.x  See previous release notes for 2.6.x history.

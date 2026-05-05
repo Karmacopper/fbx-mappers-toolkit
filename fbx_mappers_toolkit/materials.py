@@ -9,7 +9,6 @@ from bpy.props import FloatVectorProperty
 
 
 # ─── Base material definitions ────────────────────────────────────────────────
-# M_FBXMT_Island_01 is retired. Chain_01 is the new locked baseline marker.
 
 FBXMT_MATERIALS = {
     'M_FBXMT_Floor':   (0.3,  0.75, 0.3,  1.0),
@@ -22,25 +21,41 @@ FBXMT_MATERIALS = {
 FBXMT_FLOOR_MATERIALS = {'M_FBXMT_Floor', 'M_FBXMT_Ceiling'}
 FBXMT_WALL_MATERIALS  = {'M_FBXMT_Wall', 'M_FBXMT_Trim'}
 FBXMT_IGNORE_MATERIAL = 'M_FBXMT_Ignore'
-# Chain materials are dynamic — not in this set, handled separately.
 FBXMT_ALL_MATERIALS   = FBXMT_FLOOR_MATERIALS | FBXMT_WALL_MATERIALS | {FBXMT_IGNORE_MATERIAL}
 
 # Checker textures removed — all materials now use procedural node trees
 
-# Chain material constants
-CHAIN_PREFIX        = 'M_FBXMT_Chain_'
-CHAIN_LOCKED_NAME   = 'M_FBXMT_Chain_01'   # always present, cannot be deleted
-TOOLKIT_PREFIX      = 'M_FBXMT_'
+# ── Island marker system ─────────────────────────────────────────────────────
+# One marker material visible to the artist. 15 hidden sub-materials used
+# internally by the graph colourer and unwrapper to distinguish islands.
+# Sub-materials share Colour A with the marker but get distinct grey B values
+# (0..100% in 15 steps). They are filtered from all panels and never baked.
+ISLAND_MARKER_NAME = 'M_FBXMT_Island'
+ISLAND_SUB_PREFIX  = 'M_FBXMT_Island_'
+ISLAND_SUB_COUNT   = 15
+ISLAND_SUB_NAMES   = [f'M_FBXMT_Island_{i:02d}' for i in range(1, ISLAND_SUB_COUNT + 1)]
+# Grey B values evenly spread 0..1 across 15 steps
+ISLAND_SUB_GREYS   = [i / (ISLAND_SUB_COUNT - 1) for i in range(ISLAND_SUB_COUNT)]
 
-# Checkerboard colour for Chain_01 and the blue tile in all subsequent chains.
-# HLS: hue≈220°, L=0.45, S=0.80
-_CHECKER_BLUE_HLS  = (0.611, 0.45, 0.80)
-CHECKER_BLUE_RGB   = colorsys.hls_to_rgb(*_CHECKER_BLUE_HLS)
-CHAIN_COLOR_LIGHTNESS = _CHECKER_BLUE_HLS[1]  # normalised lightness for all chain checker colours
+# Keep CHAIN_PREFIX/CHAIN_NAMES as legacy aliases so existing blend files
+# that still reference old chain materials don't hard-error on import.
+CHAIN_PREFIX  = 'M_FBXMT_Chain_'
+CHAIN_NAMES   = [f'M_FBXMT_Chain_0{i}' for i in range(1, 6)]
+TOOLKIT_PREFIX = 'M_FBXMT_'
 
-# Default colour B for Chain_01 (orange-ish, same perceived brightness as blue)
-_CHAIN01_DEFAULT_B_HLS = (0.08, 0.45, 0.80)
-CHAIN01_COLOR_B_RGB    = colorsys.hls_to_rgb(*_CHAIN01_DEFAULT_B_HLS)
+# All visible FBXMT material names (excludes hidden sub-materials)
+FBXMT_ALL_MATERIALS_WITH_CHAINS = set(FBXMT_ALL_MATERIALS) | {ISLAND_MARKER_NAME}
+
+# Default island marker colour A — vivid cyan-blue, distinct from base materials
+_ISLAND_COLOR_A = colorsys.hls_to_rgb(0.58, 0.55, 0.90)  # bright cyan
+_CHAIN_DEFAULTS = []  # legacy — no longer used for new files
+
+CHECKER_BLUE_RGB   = _ISLAND_COLOR_A
+
+# Lighter/Darker multipliers (indices 0-6, default index 3 = 1.0 = same as A)
+_DARKER_MULTIPLIERS = [0.30, 0.50, 0.70, 1.00, 1.30, 1.50, 1.70]
+# Greyscale values (indices 0-4: black, 25%, 50%, 75%, white)
+_GREY_VALUES        = [0.0, 0.25, 0.50, 0.75, 1.0]
 
 COLLECTION_GEO        = 'Geo'
 COLLECTION_PROPS      = 'Props'
@@ -55,45 +70,42 @@ LIGHTMAP_CHANNEL_NAME = 'LightmapUVs'
 _suppress_handler = False
 
 
-# ─── Chain helpers ────────────────────────────────────────────────────────────
+# ─── Island marker helpers ───────────────────────────────────────────────────
 
-def _chain_index(mat_name):
-    """Return integer suffix of M_FBXMT_Chain_NN, or None."""
-    m = re.fullmatch(re.escape(CHAIN_PREFIX) + r'(\d+)', mat_name)
+def _island_sub_index(mat_name):
+    """Return 1-based index of M_FBXMT_Island_NN, or None."""
+    m = re.fullmatch(re.escape(ISLAND_SUB_PREFIX) + r'(\d+)', mat_name)
     return int(m.group(1)) if m else None
 
 
-def _existing_chain_indices():
-    return sorted(
-        _chain_index(m.name)
-        for m in bpy.data.materials
-        if _chain_index(m.name) is not None
+def _is_island_sub_material(mat):
+    """True for hidden sub-materials M_FBXMT_Island_01..15."""
+    return mat is not None and mat.name in set(ISLAND_SUB_NAMES)
+
+
+def _is_island_material(mat):
+    """True for the visible marker OR any hidden sub-material."""
+    return mat is not None and (
+        mat.name == ISLAND_MARKER_NAME or _is_island_sub_material(mat)
     )
 
 
-def _next_chain_index():
-    """Lowest positive integer not already used - fills gaps before extending."""
-    used = set(_existing_chain_indices())
-    i = 1
-    while i in used:
-        i += 1
-    return i
+def get_all_island_sub_materials():
+    """All 15 hidden sub-materials, creating missing ones."""
+    return [bpy.data.materials.get(n) for n in ISLAND_SUB_NAMES if bpy.data.materials.get(n)]
 
+
+# Legacy aliases so old code that imports _chain_index / _is_chain_material
+# from materials.py doesn't hard-error on existing blend files.
+def _chain_index(mat_name):
+    m = re.fullmatch(re.escape(CHAIN_PREFIX) + r'(\d+)', mat_name)
+    return int(m.group(1)) if m else None
 
 def _is_chain_material(mat):
-    return mat is not None and _chain_index(mat.name) is not None
-
-
-def _is_locked_chain(mat):
-    return mat is not None and mat.name == CHAIN_LOCKED_NAME
-
+    return mat is not None and mat.name in set(CHAIN_NAMES)
 
 def get_all_chain_materials():
-    """All M_FBXMT_Chain_NN materials sorted by index."""
-    return sorted(
-        [m for m in bpy.data.materials if _is_chain_material(m)],
-        key=lambda m: _chain_index(m.name),
-    )
+    return [bpy.data.materials.get(name) for name in CHAIN_NAMES if bpy.data.materials.get(name)]
 
 
 def _get_prefs():
@@ -106,20 +118,120 @@ def _get_prefs():
 
 # ─── Node-tree builders ───────────────────────────────────────────────────────
 
-def setup_material_nodes(mat, colour, scale=None, color_b=None):
-    """Build the procedural checker node tree for a base toolkit material.
-    colour is Color A (main tile). color_b is Color B - defaults to 70%
-    darkened colour if not supplied. scale reads from prefs if not specified.
-    """
+def setup_material_nodes(mat, colour, scale=None, color_b=None, pattern='SQUARE'):
+    """Build the procedural checker node tree for a base toolkit material."""
     r, g, b = colour[0], colour[1], colour[2]
     color_a = (r, g, b)
     if color_b is None:
         color_b = (r * 0.7, g * 0.7, b * 0.7)
-    _build_checker_node_tree(mat, color_a, color_b, scale=scale)
+    _build_checker_node_tree(mat, color_a, color_b, scale=scale, pattern=pattern)
     mat.diffuse_color = (*colour[:3], 1.0)
 
 
-def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None):
+def _resolve_color_b(color_a_rgb, mode, color_b_rgb, darker_idx=3, grey_idx=2):
+    """Return the resolved colour B as an RGB tuple.
+
+    mode='MANUAL'    — return color_b_rgb as-is (stored vector, index 0 = manual)
+    mode='DARKER'    — multiply A's lightness by _DARKER_MULTIPLIERS[darker_idx-1], clamped 0-1
+    mode='GREYSCALE' — return grey from _GREY_VALUES[grey_idx-1], ignores A
+    mode='INVERSE'   — rotate A's hue by 0.5, keep S and L
+    """
+    if mode == 'MANUAL':
+        return tuple(color_b_rgb[:3])
+
+    r, g, b = color_a_rgb[0], color_a_rgb[1], color_a_rgb[2]
+
+    if mode == 'DARKER':
+        h, l, s = colorsys.rgb_to_hls(r, g, b)
+        mult     = _DARKER_MULTIPLIERS[max(0, min(6, darker_idx - 1))]
+        new_l    = max(0.0, min(1.0, l * mult))
+        return colorsys.hls_to_rgb(h, new_l, s)
+
+    if mode == 'GREYSCALE':
+        v = _GREY_VALUES[max(0, min(4, grey_idx - 1))]
+        return (v, v, v)
+
+    if mode == 'INVERSE':
+        h, l, s = colorsys.rgb_to_hls(r, g, b)
+        return colorsys.hls_to_rgb((h + 0.5) % 1.0, l, s)
+
+    return tuple(color_b_rgb[:3])  # fallback
+
+
+def _build_pattern_nodes(nodes, links, new_node, mapping_checker, pattern):
+    """Build the pattern sub-graph between the checker mapping and the A/B Mix.
+
+    Returns a Value socket (0.0 or 1.0 per pixel) used as the Mix factor:
+      0.0 → colour A,  1.0 → colour B
+
+    SQUARE   — uses ShaderNodeTexChecker directly (existing path), returns None
+                so the caller falls back to the checker node's Fac output.
+    DIAGONAL — fract(U) + fract(V) < 1.0
+    DIAMOND  — abs(fract(U) - 0.5) + abs(fract(V) - 0.5) < 0.5
+    """
+    if pattern == 'SQUARE':
+        return None  # caller uses checker.outputs['Color'] as before
+
+    # Separate U and V from the checker-mapped vector
+    sep = new_node('ShaderNodeSeparateXYZ', -460, 400)
+    links.new(mapping_checker.outputs['Vector'], sep.inputs['Vector'])
+
+    frac_u = new_node('ShaderNodeMath', -280, 460)
+    frac_u.operation = 'FRACT'
+    links.new(sep.outputs['X'], frac_u.inputs[0])
+
+    frac_v = new_node('ShaderNodeMath', -280, 360)
+    frac_v.operation = 'FRACT'
+    links.new(sep.outputs['Y'], frac_v.inputs[0])
+
+    if pattern == 'DIAGONAL':
+        # fract(U) + fract(V) < 1.0
+        add = new_node('ShaderNodeMath', -100, 410)
+        add.operation = 'ADD'
+        links.new(frac_u.outputs['Value'], add.inputs[0])
+        links.new(frac_v.outputs['Value'], add.inputs[1])
+
+        lt = new_node('ShaderNodeMath', 80, 410)
+        lt.operation = 'LESS_THAN'
+        lt.inputs[1].default_value = 1.0
+        links.new(add.outputs['Value'], lt.inputs[0])
+        return lt.outputs['Value']
+
+    if pattern == 'DIAMOND':
+        # abs(fract(U) - 0.5) + abs(fract(V) - 0.5) < 0.5
+        sub_u = new_node('ShaderNodeMath', -100, 460)
+        sub_u.operation = 'SUBTRACT'
+        sub_u.inputs[1].default_value = 0.5
+        links.new(frac_u.outputs['Value'], sub_u.inputs[0])
+
+        sub_v = new_node('ShaderNodeMath', -100, 360)
+        sub_v.operation = 'SUBTRACT'
+        sub_v.inputs[1].default_value = 0.5
+        links.new(frac_v.outputs['Value'], sub_v.inputs[0])
+
+        abs_u = new_node('ShaderNodeMath', 80, 460)
+        abs_u.operation = 'ABSOLUTE'
+        links.new(sub_u.outputs['Value'], abs_u.inputs[0])
+
+        abs_v = new_node('ShaderNodeMath', 80, 360)
+        abs_v.operation = 'ABSOLUTE'
+        links.new(sub_v.outputs['Value'], abs_v.inputs[0])
+
+        add = new_node('ShaderNodeMath', 260, 410)
+        add.operation = 'ADD'
+        links.new(abs_u.outputs['Value'], add.inputs[0])
+        links.new(abs_v.outputs['Value'], add.inputs[1])
+
+        lt = new_node('ShaderNodeMath', 440, 410)
+        lt.operation = 'LESS_THAN'
+        lt.inputs[1].default_value = 0.5
+        links.new(add.outputs['Value'], lt.inputs[0])
+        return lt.outputs['Value']
+
+    return None  # unknown pattern — fall back to square
+
+
+def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE'):
     """Procedural checkerboard with texel-tile corner cross markers via Emission.
 
     Two independent mapping paths:
@@ -186,12 +298,34 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None):
     mapping_tile.inputs['Scale'].default_value = (tile_scale, tile_scale, tile_scale)
     links.new(tc.outputs['UV'], mapping_tile.inputs['Vector'])
 
-    # ── Main checker ──────────────────────────────────────────────────────────
+    # ── Main checker (always built — provides colour source and SQUARE factor) ──
     checker = new_node('ShaderNodeTexChecker', -460, 200)
     checker.inputs['Color1'].default_value = (*color_a_rgb, 1.0)
     checker.inputs['Color2'].default_value = (*color_b_rgb, 1.0)
     checker.inputs['Scale'].default_value  = 1.0
     links.new(mapping_checker.outputs['Vector'], checker.inputs['Vector'])
+
+    # ── Pattern sub-graph ─────────────────────────────────────────────────────
+    # Returns a Value socket (0/1) for DIAGONAL and DIAMOND.
+    # Returns None for SQUARE — checker's own Fac output is used instead.
+    pattern_factor = _build_pattern_nodes(
+        nodes, links, new_node, mapping_checker, pattern
+    )
+
+    # For SQUARE, use the checker Fac directly.
+    # For DIAGONAL/DIAMOND, we need a separate A/B mix driven by pattern_factor.
+    # The checker node is still used to derive the invert colour for cross markers.
+    if pattern_factor is not None:
+        # Pattern mix — pure A/B driven by pattern geometry
+        pat_mix = new_node('ShaderNodeMix', -100, 300)
+        pat_mix.data_type  = 'RGBA'
+        pat_mix.blend_type = 'MIX'
+        pat_mix.inputs['A'].default_value = (*color_a_rgb, 1.0)
+        pat_mix.inputs['B'].default_value = (*color_b_rgb, 1.0)
+        links.new(pattern_factor, pat_mix.inputs['Factor'])
+        checker_color_out = pat_mix.outputs['Result']
+    else:
+        checker_color_out = checker.outputs['Color']
 
     # ── Colour invert — applied to checker output for cross arms ────────────
     # 1 - checker per channel via DIFFERENCE blend against white.
@@ -392,16 +526,29 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None):
         edge_mask = cross_mask
 
     # ── Wire invert from checker, mix against combined mask ─────────────────
-    # Fac=0 → tile body (checker), Fac=1 → markers (inverted checker).
+    # Fac=0 → tile body (checker), Fac=1 → markers.
+    # Hue shift node sits between invert and mix — shifts marker colour.
+    # Default 180 degrees = fully inverted checker (maximum contrast).
+    # +/-180 from default = lines match checker colour (invisible).
 
-    mix = new_node('ShaderNodeMix', 700 + (1600 if show_circle else 0), 100)
+    x_mix = 700 + (1600 if show_circle else 0)
+
+    hue_shift_deg = prefs.corner_hue_shift if prefs else 180.0
+    hue_node = new_node('ShaderNodeHueSaturation', x_mix - 200, 0)
+    hue_node.inputs['Saturation'].default_value = 1.0
+    hue_node.inputs['Value'].default_value      = 1.0
+    hue_node.inputs['Fac'].default_value        = 1.0
+    hue_node.inputs['Hue'].default_value        = 0.5 + (hue_shift_deg / 360.0)
+
+    mix = new_node('ShaderNodeMix', x_mix, 100)
     mix.data_type  = 'RGBA'
     mix.blend_type = 'MIX'
     mix.inputs['Factor'].default_value = 0.0
     links.new(edge_mask.outputs['Value'], mix.inputs['Factor'])
-    links.new(checker.outputs['Color'],  mix.inputs['A'])
-    links.new(checker.outputs['Color'], invert.inputs['B'])
-    links.new(invert.outputs['Result'],  mix.inputs['B'])
+    links.new(checker_color_out,           mix.inputs['A'])
+    links.new(checker_color_out,           invert.inputs['B'])
+    links.new(invert.outputs['Result'],   hue_node.inputs['Color'])
+    links.new(hue_node.outputs['Color'],  mix.inputs['B'])
 
     # ── Output ────────────────────────────────────────────────────────────────
     # Position emission and output to the right of mix, wherever it landed
@@ -445,15 +592,46 @@ def _write_chain_colors(mat, color_a, color_b):
 
 # ─── Base material management ─────────────────────────────────────────────────
 
-def ensure_chain_01():
-    """Create M_FBXMT_Chain_01 if it doesn't exist. Always returns it."""
-    if CHAIN_LOCKED_NAME not in bpy.data.materials:
-        mat    = bpy.data.materials.new(name=CHAIN_LOCKED_NAME)
-        prefs  = _get_prefs()
-        col_a  = tuple(prefs.color_chain01_a[:3]) if prefs else CHECKER_BLUE_RGB
-        col_b  = tuple(prefs.color_chain01_b[:3]) if prefs else CHAIN01_COLOR_B_RGB
-        _build_checker_node_tree(mat, col_a, col_b)
-    return bpy.data.materials[CHAIN_LOCKED_NAME]
+def ensure_island_materials():
+    """Ensure M_FBXMT_Island marker and all 15 hidden sub-materials exist.
+    Colour A is always taken from color_wall_a — island faces are wall-type
+    surfaces by definition and should read as such.
+    """
+    created = []
+    prefs   = _get_prefs()
+    if prefs and hasattr(prefs, 'color_wall_a'):
+        col_a = tuple(prefs.color_wall_a[:3])
+    else:
+        col_a = tuple(FBXMT_MATERIALS['M_FBXMT_Wall'][:3])
+
+    # Visible marker — always rebuild to pick up current wall colour
+    if ISLAND_MARKER_NAME not in bpy.data.materials:
+        mat = bpy.data.materials.new(name=ISLAND_MARKER_NAME)
+        created.append(ISLAND_MARKER_NAME)
+    else:
+        mat = bpy.data.materials[ISLAND_MARKER_NAME]
+    _build_checker_node_tree(mat, col_a, (0.5, 0.5, 0.5))
+
+    # Hidden sub-materials — always rebuild to pick up current wall colour
+    for i, name in enumerate(ISLAND_SUB_NAMES):
+        if name not in bpy.data.materials:
+            mat = bpy.data.materials.new(name=name)
+            created.append(name)
+        else:
+            mat = bpy.data.materials[name]
+        grey = ISLAND_SUB_GREYS[i]
+        _build_checker_node_tree(mat, col_a, (grey, grey, grey))
+    return created
+
+
+# Legacy shim — called by load_post handler which previously ensured chain materials
+def ensure_chain_materials():
+    return ensure_island_materials()
+
+
+def _chain_pref_color(prefs, idx, ab):
+    """Legacy — no longer used for new files."""
+    return None
 
 
 def ensure_fbxmt_materials():
@@ -463,59 +641,87 @@ def ensure_fbxmt_materials():
             mat = bpy.data.materials.new(name=name)
             setup_material_nodes(mat, colour)
             created.append(name)
-    ensure_chain_01()
+    created += ensure_island_materials()
     return created
 
 
+# Set True after the first successful rebuild this session — gates the
+# automatic rebuild on import so it only runs once. Reset to False by any
+# deliberate user-triggered rebuild so the next import refreshes correctly.
+_materials_built = False
+
+
 def rebuild_fbxmt_materials():
-    """Rebuild base material node trees, rebuild Chain_01, push all chains to all scene meshes.
-    Reads checker colours and scale from addon preferences if available.
+    """Rebuild base material node trees and all 5 chain materials.
+    Reads checker colours, pattern, and colour-B mode from addon preferences.
     """
+    global _materials_built
     prefs = _get_prefs()
 
-    # Per-material A+B colour pairs from prefs
-    pref_colour_pairs = {}
-    if prefs:
-        pref_colour_pairs = {
-            'M_FBXMT_Floor':   (tuple(prefs.color_floor_a[:3]),   tuple(prefs.color_floor_b[:3])),
-            'M_FBXMT_Ceiling': (tuple(prefs.color_ceiling_a[:3]), tuple(prefs.color_ceiling_b[:3])),
-            'M_FBXMT_Wall':    (tuple(prefs.color_wall_a[:3]),    tuple(prefs.color_wall_b[:3])),
-            'M_FBXMT_Trim':    (tuple(prefs.color_trim_a[:3]),    tuple(prefs.color_trim_b[:3])),
-            'M_FBXMT_Ignore':  (tuple(prefs.color_ignore_a[:3]),  tuple(prefs.color_ignore_b[:3])),
-        }
+    # Slot key → material name mapping
+    _SLOT_TO_MAT = {
+        'floor':   'M_FBXMT_Floor',
+        'ceiling': 'M_FBXMT_Ceiling',
+        'wall':    'M_FBXMT_Wall',
+        'trim':    'M_FBXMT_Trim',
+        'ignore':  'M_FBXMT_Ignore',
+    }
+    def _read_mat_settings(slot):
+        """Return (color_a, color_b, pattern) for a named slot from prefs."""
+        if not prefs:
+            return None, None, 'SQUARE'
+        col_a   = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
+        col_b_v = tuple(getattr(prefs, f'color_{slot}_b', (0.35,)*4)[:3])
+        mode    = getattr(prefs, f'color_b_mode_{slot}', 'MANUAL')
+        darker  = getattr(prefs, f'color_b_darker_{slot}', 4)
+        grey    = getattr(prefs, f'color_b_grey_{slot}',   3)
+        pattern = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
+        col_b   = _resolve_color_b(col_a, mode, col_b_v, darker, grey)
+        return col_a, col_b, pattern
 
     rebuilt = []
-    for name, default_colour in FBXMT_MATERIALS.items():
-        mat = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
-        if name in pref_colour_pairs:
-            col_a, col_b = pref_colour_pairs[name]
-        else:
-            r, g, b = default_colour[:3]
-            col_a, col_b = (r, g, b), (r * 0.7, g * 0.7, b * 0.7)
-        setup_material_nodes(mat, col_a, color_b=col_b)
-        rebuilt.append(name)
 
-    # Rebuild Chain_01 with pref colours and scale
-    chain_01 = bpy.data.materials.get(CHAIN_LOCKED_NAME) or bpy.data.materials.new(name=CHAIN_LOCKED_NAME)
-    col_a    = tuple(prefs.color_chain01_a[:3]) if prefs else CHECKER_BLUE_RGB
-    col_b    = tuple(prefs.color_chain01_b[:3]) if prefs else CHAIN01_COLOR_B_RGB
-    _build_checker_node_tree(chain_01, col_a, col_b)
-    rebuilt.append(CHAIN_LOCKED_NAME)
+    for slot, mat_name in _SLOT_TO_MAT.items():
+        try:
+            mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(name=mat_name)
+            col_a, col_b, pattern = _read_mat_settings(slot)
+            if col_a is None:
+                default = FBXMT_MATERIALS[mat_name]
+                r, g, b = default[:3]
+                col_a, col_b, pattern = (r,g,b), (r*.7, g*.7, b*.7), 'SQUARE'
+            setup_material_nodes(mat, col_a, color_b=col_b, pattern=pattern)
+            rebuilt.append(mat_name)
+        except Exception:
+            pass
 
-    # Rebuild node trees on chain materials that are already slotted on meshes.
-    # Do NOT push chains to meshes that don't already have them — that is the
-    # user's explicit choice via the Islands list. Respect it.
-    all_chains = get_all_chain_materials()
-    chain_set  = {c.name for c in all_chains}
-    for obj in bpy.context.scene.objects:
-        if obj.type != 'MESH':
-            continue
-        for slot in obj.data.materials:
-            if slot and slot.name in chain_set and slot.name != CHAIN_LOCKED_NAME:
-                rgb_a = _read_chain_color_a(slot) or CHECKER_BLUE_RGB
-                rgb_b = _read_chain_color_b(slot) or CHAIN01_COLOR_B_RGB
-                _build_checker_node_tree(slot, rgb_a, rgb_b)
+    # Rebuild island marker and all 15 hidden sub-materials.
+    # Sub-materials share Colour A from prefs with the marker,
+    # but keep their evenly-spaced grey B values unchanged.
+    try:
+        # Island Colour A always tracks Wall Colour A — island faces are
+        # wall-type surfaces and should read identically in the viewport.
+        col_a_island, _, _ = _read_mat_settings('wall')
+        if col_a_island is None:
+            col_a_island = tuple(FBXMT_MATERIALS['M_FBXMT_Wall'][:3])
+        _, _, pattern_island = _read_mat_settings('island')
+        if pattern_island is None:
+            pattern_island = 'SQUARE'
 
+        # Visible marker — B is mid-grey
+        marker = bpy.data.materials.get(ISLAND_MARKER_NAME) or bpy.data.materials.new(name=ISLAND_MARKER_NAME)
+        _build_checker_node_tree(marker, col_a_island, (0.5, 0.5, 0.5), pattern=pattern_island)
+        rebuilt.append(ISLAND_MARKER_NAME)
+
+        # Hidden sub-materials — evenly spaced grey B
+        for i, name in enumerate(ISLAND_SUB_NAMES):
+            mat  = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
+            grey = ISLAND_SUB_GREYS[i]
+            _build_checker_node_tree(mat, col_a_island, (grey, grey, grey), pattern=pattern_island)
+            rebuilt.append(name)
+    except Exception:
+        pass
+
+    _materials_built = True
     return rebuilt
 
 
@@ -541,14 +747,14 @@ def move_to_collection(obj, collection_name):
 
 def add_fbxmt_slots(obj):
     ensure_fbxmt_materials()
-    for mat_name in FBXMT_MATERIALS:
+    existing = {m.name for m in obj.data.materials if m}
+    # Push base materials + visible island marker only.
+    # Hidden sub-materials are added on demand by the graph colourer.
+    for mat_name in list(FBXMT_MATERIALS) + [ISLAND_MARKER_NAME]:
         mat = bpy.data.materials.get(mat_name)
-        if mat and mat_name not in [m.name for m in obj.data.materials if m]:
+        if mat and mat.name not in existing:
             obj.data.materials.append(mat)
-    # Also push Chain_01
-    chain_01 = bpy.data.materials.get(CHAIN_LOCKED_NAME)
-    if chain_01 and chain_01.name not in [m.name for m in obj.data.materials if m]:
-        obj.data.materials.append(chain_01)
+            existing.add(mat.name)
 
 
 def assign_trim_material(obj):
@@ -574,25 +780,70 @@ def assign_trim_material(obj):
     obj.data.update()
 
 
-# ─── Sanity check helper ──────────────────────────────────────────────────────
+# ─── Sanity check helpers ─────────────────────────────────────────────────────
 
-def check_chain_sanity(objects):
+def check_naked_faces(objects):
+    """Return dict of {obj_name: naked_face_count} for mesh objects that have
+    faces with no material assigned (material_index out of range or slot is None).
+    Only reports objects where ALL faces have materials — if any face is naked,
+    the whole object is flagged.
     """
-    Return list of object names that have at least one chain material assigned
-    to a face but are missing Chain_01 from their slots entirely.
-    These will produce incorrect UV islands on export.
-    """
-    problems = []
+    problems = {}
     for obj in objects:
         if obj.type != 'MESH':
             continue
-        slot_names = {m.name for m in obj.data.materials if m}
-        has_any_chain = any(
-            _chain_index(n) is not None for n in slot_names
+        mesh = obj.data
+        slot_count = len(mesh.materials)
+        naked = sum(
+            1 for face in mesh.polygons
+            if face.material_index >= slot_count
+            or mesh.materials[face.material_index] is None
         )
-        if has_any_chain and CHAIN_LOCKED_NAME not in slot_names:
-            problems.append(obj.name)
+        if naked:
+            problems[obj.name] = naked
     return problems
+
+
+class OT_FBXMT_Check_Mesh(Operator):
+    """Check selected mesh objects for faces with no material assigned."""
+    bl_idname  = 'fbxmt.check_mesh'
+    bl_label   = 'Check Mesh'
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'OBJECT'
+            and any(obj.type == 'MESH' for obj in context.selected_objects)
+        )
+
+    def execute(self, context):
+        mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        problems     = check_naked_faces(mesh_objects)
+
+        if not problems:
+            self.report({'INFO'}, f"All {len(mesh_objects)} selected mesh(es) clean — no naked faces")
+            return {'FINISHED'}
+
+        # Select all offending objects, stay in Object mode
+        bpy.ops.object.select_all(action='DESELECT')
+        for name in problems:
+            obj = bpy.data.objects.get(name)
+            if obj:
+                obj.select_set(True)
+        if problems:
+            first = bpy.data.objects.get(next(iter(problems)))
+            if first:
+                context.view_layer.objects.active = first
+
+        names  = ', '.join(list(problems.keys())[:5])
+        suffix = f' (+{len(problems)-5} more)' if len(problems) > 5 else ''
+        total  = sum(problems.values())
+        self.report(
+            {'WARNING'},
+            f"Naked faces found: {total} face(s) across {len(problems)} object(s): {names}{suffix}"
+        )
+        return {'FINISHED'}
 
 
 # ─── Operators: scene setup ───────────────────────────────────────────────────
@@ -641,6 +892,8 @@ class OT_FBXMT_Rebuild_Materials(Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
+        global _materials_built
+        _materials_built = False
         rebuilt = rebuild_fbxmt_materials()
         self.report({'INFO'}, f'Rebuilt: {", ".join(rebuilt)}')
         return {'FINISHED'}
@@ -744,116 +997,6 @@ class OT_FBXMT_Assign_Materials(Operator):
 
 # ─── Operators: chain materials ───────────────────────────────────────────────
 
-class OT_FBXMT_Add_Chain_Material(Operator):
-    """Generate the next M_FBXMT_Chain_NN material via a colour picker popup."""
-    bl_idname  = 'fbxmt.add_chain_material'
-    bl_label   = 'Add Chain Material'
-    bl_options = {'REGISTER', 'UNDO'}
-
-    # Starting colours — both editable live in the panel after creation.
-    color_a: FloatVectorProperty(
-        name    = 'Colour A',
-        subtype = 'COLOR',
-        min=0.0, max=1.0,
-        default = CHECKER_BLUE_RGB,
-    )
-    color_b: FloatVectorProperty(
-        name    = 'Colour B',
-        subtype = 'COLOR',
-        min=0.0, max=1.0,
-        default = (0.85, 0.35, 0.05),
-    )
-
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH'
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self, width=240)
-
-    def draw(self, context):
-        layout = self.layout
-        layout.label(text='Starting colours (editable after creation):')
-        row = layout.row(align=True)
-        row.prop(self, 'color_a', text='A')
-        row.prop(self, 'color_b', text='B')
-
-    def execute(self, context):
-        idx  = _next_chain_index()
-        name = f'{CHAIN_PREFIX}{idx:02d}'
-
-        if name in bpy.data.materials:
-            self.report({'WARNING'}, f'{name} already exists')
-            return {'CANCELLED'}
-
-        # Normalise lightness on B to match visual consistency
-        h, _l, s = colorsys.rgb_to_hls(self.color_b[0], self.color_b[1], self.color_b[2])
-        color_b  = colorsys.hls_to_rgb(h, CHAIN_COLOR_LIGHTNESS, s)
-        color_a  = tuple(self.color_a)
-
-        mat = bpy.data.materials.new(name=name)
-        _build_checker_node_tree(mat, color_a, color_b)
-
-        # Push to active object immediately (poll already guarantees a mesh is active)
-        obj  = context.active_object
-        mesh = obj.data
-        if mat.name not in {m.name for m in mesh.materials if m}:
-            mesh.materials.append(mat)
-
-        self.report({'INFO'}, f'Created {name} and added to {obj.name}')
-        return {'FINISHED'}
-
-
-def _resolve_selected_chain(context):
-    """Return the island/chain material selected in the Islands list, or None.
-
-    The Islands UIList is now object-scoped - it points into the active
-    object's mesh.materials, not bpy.data.materials. fbxmt_island_list_index
-    is the raw slot index on the object. filter_items hides non-chain entries
-    visually but does not remap the index, so we confirm the resolved material
-    is actually a chain material before returning it.
-    """
-    obj = context.active_object
-    if not obj or obj.type != 'MESH':
-        return None
-    all_mats = list(obj.data.materials)
-    idx = context.scene.fbxmt_island_list_index
-    if idx < 0 or idx >= len(all_mats):
-        return None
-    mat = all_mats[idx]
-    return mat if _is_chain_material(mat) else None
-
-
-class OT_FBXMT_Delete_Chain_Material(Operator):
-    """Delete the selected chain material. Chain_01 is protected."""
-    bl_idname  = 'fbxmt.delete_chain_material'
-    bl_label   = 'Delete Chain Material'
-    bl_options = {'REGISTER', 'UNDO'}
-
-    @classmethod
-    def poll(cls, context):
-        mat = _resolve_selected_chain(context)
-        return mat is not None and not _is_locked_chain(mat)
-
-    def execute(self, context):
-        mat = _resolve_selected_chain(context)
-        if mat is None:
-            self.report({'WARNING'}, 'No chain material selected - select one in the list')
-            return {'CANCELLED'}
-        if _is_locked_chain(mat):
-            self.report({'WARNING'}, f'{CHAIN_LOCKED_NAME} is locked and cannot be deleted')
-            return {'CANCELLED'}
-        idx  = context.scene.fbxmt_island_list_index
-        name = mat.name
-        bpy.data.materials.remove(mat, do_unlink=True)
-        self.report({'INFO'}, f'Deleted {name}')
-        obj = context.active_object
-        remaining = len(obj.data.materials) if obj and obj.type == 'MESH' else 0
-        context.scene.fbxmt_island_list_index = min(idx, max(0, remaining - 1))
-        return {'FINISHED'}
-
-
 # ─── Material display helpers ─────────────────────────────────────────────────
 
 # Human-readable aliases for base material internal names.
@@ -894,6 +1037,59 @@ class FBXMT_UL_BaseMaterials(bpy.types.UIList):
         return flags, list(range(len(all_mats)))
 
 
+# ─── UIList: all FBXMT materials — fixed canonical order ─────────────────────
+
+# Canonical display order and aliases for the unified list
+_ALL_MAT_DISPLAY = {
+    'M_FBXMT_Floor':   'Floor',
+    'M_FBXMT_Ceiling': 'Ceiling',
+    'M_FBXMT_Wall':    'Wall',
+    'M_FBXMT_Trim':    'Trim',
+    'M_FBXMT_Ignore':  'Ignore',
+    'M_FBXMT_Island':  'Island Marker',
+}
+# Hidden sub-materials are intentionally absent from _ALL_MAT_DISPLAY
+# so they never appear in the panel UIList.
+_ALL_MAT_ORDER = list(_ALL_MAT_DISPLAY.keys())
+
+
+class FBXMT_UL_AllMaterials(bpy.types.UIList):
+    """Unified material list showing all 10 FBXMT materials in fixed canonical order."""
+    bl_idname = 'FBXMT_UL_all_materials'
+
+    def draw_item(self, _ctx, layout, _data, item, icon, _adata, _aprop, _index):
+        alias    = _ALL_MAT_DISPLAY.get(item.name, item.name)
+        tile_img = bpy.data.images.get(f'__tile_{item.name}')
+        if self.layout_type in {'DEFAULT', 'COMPACT'}:
+            if tile_img:
+                tile_img.preview_ensure()
+                layout.label(text=alias, icon_value=tile_img.preview.icon_id)
+            else:
+                layout.label(text=alias, icon='MATERIAL')
+        else:
+            layout.alignment = 'CENTER'
+            if tile_img:
+                tile_img.preview_ensure()
+                layout.label(text='', icon_value=tile_img.preview.icon_id)
+            else:
+                layout.label(text='', icon='MATERIAL')
+
+    def filter_items(self, _ctx, data, prop_name):
+        all_mats = getattr(data, prop_name)
+        # Show only FBXMT materials, sorted in canonical order
+        order_map = {name: i for i, name in enumerate(_ALL_MAT_ORDER)}
+        flags = []
+        order = []
+        for i, m in enumerate(all_mats):
+            if m and m.name in order_map:
+                flags.append(self.bitflag_filter_item)
+                order.append(order_map[m.name])
+            else:
+                flags.append(0)
+                order.append(i)
+        return flags, order
+
+
 # ─── UIList: island/chain materials (object-scoped) ───────────────────────────
 
 class FBXMT_UL_ChainMaterials(bpy.types.UIList):
@@ -904,8 +1100,6 @@ class FBXMT_UL_ChainMaterials(bpy.types.UIList):
             row = layout.row(align=True)
             alias = _island_alias(item.name) if item else item.name
             row.label(text=alias, icon_value=item.preview.icon_id)
-            if item.name == CHAIN_LOCKED_NAME:
-                row.label(text='', icon='LOCKED')
         else:
             layout.alignment = 'CENTER'
             layout.label(text='', icon_value=item.preview.icon_id)
@@ -924,33 +1118,26 @@ class FBXMT_UL_ChainMaterials(bpy.types.UIList):
 def _resolve_active_material(context):
     """Return the material currently highlighted in whichever list is active.
 
+    Both lists are now sourced from bpy.data.materials (global pool) so the
+    index refers to that pool, not the active object's material slots.
+
     fbxmt_active_list tracks which list ('BASE' or 'ISLAND') the user last
     interacted with. fbxmt_base_selected / fbxmt_island_selected are the
     authoritative selection flags - they go False when the other list is
     clicked, giving us a true deselected state that Blender's integer index
     prop cannot express on its own (it clamps to 0, never -1).
-    Returns None if no list has an active selection or no mesh is active.
+    Returns None if no list has an active selection.
     """
-    obj = context.active_object
-    if not obj or obj.type != 'MESH':
-        return None
-    mesh     = obj.data
-    all_mats = list(mesh.materials)
     scene    = context.scene
+    all_mats = list(bpy.data.materials)
 
-    active_list = getattr(scene, 'fbxmt_active_list', 'BASE')
-    if active_list == 'BASE':
-        if not scene.fbxmt_base_selected:
-            return None
-        idx = scene.fbxmt_base_list_index
-        mat = all_mats[idx] if 0 <= idx < len(all_mats) else None
-        return mat if (mat and mat.name in _BASE_MAT_ALIASES) else None
-    else:
-        if not scene.fbxmt_island_selected:
-            return None
-        idx = scene.fbxmt_island_list_index
-        mat = all_mats[idx] if 0 <= idx < len(all_mats) else None
-        return mat if (mat and _is_chain_material(mat)) else None
+    if not scene.fbxmt_base_selected:
+        return None
+    idx = scene.fbxmt_base_list_index
+    mat = all_mats[idx] if 0 <= idx < len(all_mats) else None
+    if mat and (mat.name in _BASE_MAT_ALIASES or _is_chain_material(mat) or _is_island_material(mat)):
+        return mat
+    return None
 
 
 class OT_FBXMT_Assign_To_Faces(Operator):
@@ -997,6 +1184,13 @@ class OT_FBXMT_Assign_To_Faces(Operator):
 
         alias = _BASE_MAT_ALIASES.get(mat.name) or _island_alias(mat.name)
         self.report({'INFO'}, f'Assigned {alias} to {assigned} face(s)')
+
+        # Auto-colour islands when the Island Marker is assigned
+        if mat.name == ISLAND_MARKER_NAME and assigned > 0:
+            bpy.ops.object.mode_set(mode='OBJECT')
+            bpy.ops.fbxmt.colour_islands('EXEC_DEFAULT')
+            bpy.ops.object.mode_set(mode='EDIT')
+
         return {'FINISHED'}
 
 
@@ -1046,6 +1240,7 @@ class OT_FBXMT_Select_By_Material(Operator):
 
 
 # ─── Operators: clear ────────────────────────────────────────────────────────
+
 
 class OT_FBXMT_Clear_UVs(Operator):
     bl_idname = 'fbxmt.clear_uvs'
@@ -1105,7 +1300,8 @@ class OT_FBXMT_Clear_Mapper_Materials(Operator):
                 i for i, slot in enumerate(mesh.materials)
                 if slot and (
                     slot.name in FBXMT_ALL_MATERIALS or
-                    _is_chain_material(slot)
+                    _is_island_material(slot) or
+                    _is_chain_material(slot)  # legacy
                 )
             ]
             for i in reversed(slots_to_remove):
@@ -1199,6 +1395,162 @@ class FBXMT_MT_Clear_Menu(bpy.types.Menu):
         layout.operator('fbxmt.clear_scene_materials',  text='Clear Scene Materials',   icon='TRASH')
 
 
+# ─── Island graph colouring operator ────────────────────────────────────────
+
+class OT_FBXMT_Colour_Islands(Operator):
+    """Auto-assign hidden island sub-materials by adjacency graph colouring.
+
+    Finds all faces marked M_FBXMT_Island on selected objects, groups them
+    into connected components (islands), builds an adjacency graph between
+    components, and assigns M_FBXMT_Island_01..15 such that no two adjacent
+    islands share the same sub-material. Floor/ceiling/ignore faces are
+    ignored for adjacency — only lateral island-to-island edges matter.
+    """
+    bl_idname  = 'fbxmt.colour_islands'
+    bl_label   = 'Auto-Colour Islands'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(obj.type == 'MESH' for obj in context.selected_objects)
+
+    def execute(self, context):
+        ensure_island_materials()
+
+        total_coloured = 0
+        n_comp         = 0
+
+        for obj in context.selected_objects:
+            if obj.type != 'MESH':
+                continue
+
+            mesh = obj.data
+            bm   = bmesh.new()
+            bm.from_mesh(mesh)
+            bm.faces.ensure_lookup_table()
+
+            slot_names = [m.name if m else None for m in mesh.materials]
+
+            # All island faces = marker + any already-coloured sub-material faces
+            marker_slots = {
+                i for i, n in enumerate(slot_names)
+                if n == ISLAND_MARKER_NAME or (n and n.startswith(ISLAND_SUB_PREFIX))
+            }
+            island_faces = [f for f in bm.faces if f.material_index in marker_slots]
+
+            if not island_faces:
+                bm.free()
+                continue
+
+            # ── Step 1: connected components ──────────────────────────────────
+            # Hard rule: two faces sharing an edge are only in the same component
+            # if they have the SAME slot name. This means:
+            #   - Fresh marker faces group by connectivity as normal
+            #   - Already-coloured sub-material faces only group with same-sub neighbours
+            #   - Island boundaries from a previous run are fully respected
+            face_set = set(f.index for f in island_faces)
+            visited  = set()
+            components       = []   # list of sets of face indices
+            comp_is_new      = []   # True = uncoloured marker, False = already coloured sub
+            comp_sub_colour  = []   # existing sub-material index if already coloured, else -1
+
+            for start in island_faces:
+                if start.index in visited:
+                    continue
+                comp       = set()
+                start_name = slot_names[start.material_index]
+                queue      = [start]
+                while queue:
+                    face = queue.pop()
+                    if face.index in visited:
+                        continue
+                    visited.add(face.index)
+                    comp.add(face.index)
+                    face_name = slot_names[face.material_index]
+                    for edge in face.edges:
+                        for nb in edge.link_faces:
+                            if nb.index not in face_set or nb.index in visited:
+                                continue
+                            nb_name = slot_names[nb.material_index]
+                            # Only merge if both faces have the same slot name
+                            if nb_name == face_name:
+                                queue.append(nb)
+                components.append(comp)
+                # Determine if this component is a fresh marker or already coloured
+                if start_name == ISLAND_MARKER_NAME:
+                    comp_is_new.append(True)
+                    comp_sub_colour.append(-1)
+                else:
+                    comp_is_new.append(False)
+                    try:
+                        existing_idx = ISLAND_SUB_NAMES.index(start_name)
+                    except ValueError:
+                        existing_idx = 0
+                    comp_sub_colour.append(existing_idx)
+
+            # ── Step 2: adjacency graph ───────────────────────────────────────
+            n_comp       = len(components)
+            face_to_comp = {}
+            for ci, comp in enumerate(components):
+                for fi in comp:
+                    face_to_comp[fi] = ci
+
+            adj = [set() for _ in range(n_comp)]
+            for face in island_faces:
+                ci = face_to_comp[face.index]
+                for edge in face.edges:
+                    for nb in edge.link_faces:
+                        if nb.index in face_to_comp:
+                            cj = face_to_comp[nb.index]
+                            if cj != ci:
+                                adj[ci].add(cj)
+                                adj[cj].add(ci)
+
+            # ── Step 3: greedy graph colouring — only recolour fresh faces ────
+            colours = list(comp_sub_colour)  # seed with existing colours
+            for ci in range(n_comp):
+                if not comp_is_new[ci]:
+                    continue  # already coloured — don't touch
+                used   = {colours[cj] for cj in adj[ci] if colours[cj] >= 0}
+                colour = 0
+                while colour in used:
+                    colour += 1
+                colours[ci] = min(colour, ISLAND_SUB_COUNT - 1)
+
+            # ── Step 4: ensure needed sub-material slots exist ────────────────
+            needed_indices = {colours[ci] for ci in range(n_comp) if comp_is_new[ci]}
+            existing_names = {m.name for m in mesh.materials if m}
+            for idx in needed_indices:
+                sub_name = ISLAND_SUB_NAMES[idx]
+                if sub_name not in existing_names:
+                    sub_mat = bpy.data.materials.get(sub_name)
+                    if sub_mat:
+                        mesh.materials.append(sub_mat)
+                        existing_names.add(sub_name)
+
+            slot_names = [m.name if m else None for m in mesh.materials]
+
+            # ── Step 5: assign sub-material to new faces only ─────────────────
+            bm.faces.ensure_lookup_table()
+            for ci, comp in enumerate(components):
+                if not comp_is_new[ci]:
+                    continue
+                sub_name = ISLAND_SUB_NAMES[colours[ci]]
+                slot_idx = slot_names.index(sub_name) if sub_name in slot_names else None
+                if slot_idx is None:
+                    continue
+                for fi in comp:
+                    bm.faces[fi].material_index = slot_idx
+                total_coloured += len(comp)
+
+            bm.to_mesh(mesh)
+            bm.free()
+            mesh.update()
+
+        self.report({'INFO'}, f'Coloured {total_coloured} face(s) across {n_comp} component(s)')
+        return {'FINISHED'}
+
+
 # ─── Texel density operator ──────────────────────────────────────────────
 
 class OT_FBXMT_Set_Texel_Density(Operator):
@@ -1209,6 +1561,8 @@ class OT_FBXMT_Set_Texel_Density(Operator):
     value: bpy.props.IntProperty(default=1024)
 
     def execute(self, context):
+        global _materials_built
+        _materials_built = False
         context.scene.fbxmt_props.geo_texel_density = self.value
         rebuild_fbxmt_materials()
         return {'FINISHED'}
@@ -1224,6 +1578,8 @@ class OT_FBXMT_Set_Corner_Preset(Operator):
     value: bpy.props.IntProperty(default=2)
 
     def execute(self, context):
+        global _materials_built
+        _materials_built = False
         prefs = _get_prefs()
         if prefs:
             prefs.corner_mark_preset = self.value
@@ -1242,6 +1598,8 @@ class OT_FBXMT_Set_Checker_Scale(Operator):
     value: bpy.props.IntProperty(default=4)
 
     def execute(self, context):
+        global _materials_built
+        _materials_built = False
         prefs = _get_prefs()
         if prefs:
             prefs.checker_scale = self.value
@@ -1264,17 +1622,15 @@ def _tag_redraw():
 
 
 def _get_selected_chain(scene):
-    """Return the currently selected island/chain material from the active object, or None.
+    """Return the currently selected island/chain material from the global pool, or None.
 
     Returns None when the island list has no active selection (fbxmt_island_selected
     is False), which happens after the user clicks in the base materials list.
+    List is now sourced from bpy.data.materials so no active object is required.
     """
     if not getattr(scene, 'fbxmt_island_selected', False):
         return None
-    obj = bpy.context.active_object
-    if not obj or obj.type != 'MESH':
-        return None
-    all_mats = list(obj.data.materials)
+    all_mats = list(bpy.data.materials)
     idx      = scene.fbxmt_island_list_index
     if idx < 0 or idx >= len(all_mats):
         return None
@@ -1303,44 +1659,6 @@ def _sync_color_from_selection(scene, _context):
     _tag_redraw()
 
 
-def _on_color_a_update(scene, _context):
-    """User edited colour A - write it back to the selected chain's node tree."""
-    if _syncing_selection:
-        return
-    mat = _get_selected_chain(scene)
-    if mat is None:
-        return
-    rgb_b = _read_chain_color_b(mat)
-    if rgb_b is None:
-        return
-    _write_chain_colors(mat, tuple(scene.fbxmt_chain_color_a), rgb_b)
-    _tag_redraw()
-
-
-def _on_color_b_update(scene, _context):
-    """User edited colour B - normalise lightness and write back to node tree."""
-    global _syncing_selection
-    if _syncing_selection:
-        return
-    mat = _get_selected_chain(scene)
-    if mat is None:
-        return
-    rgb_a = _read_chain_color_a(mat)
-    if rgb_a is None:
-        return
-    raw = scene.fbxmt_chain_color_b
-    h, _l, s = colorsys.rgb_to_hls(raw[0], raw[1], raw[2])
-    normalised_b = colorsys.hls_to_rgb(h, CHAIN_COLOR_LIGHTNESS, s)
-    _write_chain_colors(mat, rgb_a, normalised_b)
-    # Reflect the normalised value back into the prop without re-triggering
-    _syncing_selection = True
-    try:
-        scene.fbxmt_chain_color_b = normalised_b
-    finally:
-        _syncing_selection = False
-    _tag_redraw()
-
-
 def register_material_props():
     bpy.types.Scene.fbxmt_chain_color_a = FloatVectorProperty(
         name        = 'Colour A',
@@ -1348,49 +1666,33 @@ def register_material_props():
         subtype     = 'COLOR',
         min=0.0, max=1.0,
         default     = CHECKER_BLUE_RGB,
-        update      = _on_color_a_update,
     )
     bpy.types.Scene.fbxmt_chain_color_b = FloatVectorProperty(
         name        = 'Colour B',
-        description = 'Second checkerboard colour for the selected island material (lightness normalised)',
+        description = 'Second checkerboard colour (manual mode only)',
         subtype     = 'COLOR',
         min=0.0, max=1.0,
         default     = (0.85, 0.35, 0.05),
-        update      = _on_color_b_update,
     )
-    def _on_island_index(scene, ctx):
-        scene.fbxmt_active_list    = 'ISLAND'
-        scene.fbxmt_island_selected = True
-        scene.fbxmt_base_selected   = False
-        _sync_color_from_selection(scene, ctx)
+    def _on_mat_index(scene, _ctx):
+        scene.fbxmt_base_selected = True
 
-    def _on_base_index(scene, _ctx):
-        scene.fbxmt_active_list    = 'BASE'
-        scene.fbxmt_base_selected   = True
-        scene.fbxmt_island_selected = False
-
-    bpy.types.Scene.fbxmt_island_list_index = bpy.props.IntProperty(
-        name    = 'Active Island Material',
-        default = 0,
-        update  = _on_island_index,
-    )
     bpy.types.Scene.fbxmt_base_list_index = bpy.props.IntProperty(
-        name    = 'Active Base Material',
+        name    = 'Active Material',
         default = 0,
-        update  = _on_base_index,
-    )
-    bpy.types.Scene.fbxmt_active_list = bpy.props.EnumProperty(
-        name  = 'Active Material List',
-        items = [('BASE', 'Base', ''), ('ISLAND', 'Island', '')],
-        default = 'BASE',
+        update  = _on_mat_index,
     )
     bpy.types.Scene.fbxmt_base_selected = bpy.props.BoolProperty(
-        name    = 'Base List Has Selection',
+        name    = 'Material List Has Selection',
         default = False,
     )
-    bpy.types.Scene.fbxmt_island_selected = bpy.props.BoolProperty(
-        name    = 'Island List Has Selection',
-        default = False,
+    # Kept for compatibility — no longer drives a second list
+    bpy.types.Scene.fbxmt_island_list_index = bpy.props.IntProperty(default=0)
+    bpy.types.Scene.fbxmt_island_selected   = bpy.props.BoolProperty(default=False)
+    bpy.types.Scene.fbxmt_active_list       = bpy.props.EnumProperty(
+        name  = 'Active List',
+        items = [('BASE', 'Base', ''), ('ISLAND', 'Island', '')],
+        default = 'BASE',
     )
 
 

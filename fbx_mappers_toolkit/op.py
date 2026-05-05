@@ -5,6 +5,7 @@ from bpy.types import Operator
 from .panel import ADDON_ID
 from .materials import LIGHTMAP_CHANNEL_NAME
 from .uv_unwrap import ensure_lightmap_channel, unwrap_mesh
+from .project_setup import cache_is_valid, copy_cache_to_textures
 
 
 class OT_FBXMT_Export(Operator):
@@ -40,25 +41,44 @@ class OT_FBXMT_Export(Operator):
         skipped      = len(context.selected_objects) - len(mesh_objects)
         exported     = 0
 
-        # Sanity check — warn about objects with chain materials but missing Chain_01
-        from .materials import check_chain_sanity
-        problems = check_chain_sanity(mesh_objects)
-        if problems:
-            names = ", ".join(problems[:5])
-            suffix = f" (+{len(problems)-5} more)" if len(problems) > 5 else ""
-            self.report(
-                {'WARNING'},
-                f"Chain sanity check failed - missing M_FBXMT_Chain_01 slot on: {names}{suffix}. "
-                f"UV islands may be incorrect. Add Chain_01 to these objects and re-unwrap before exporting."
-            )
-
+        # Naked face gate — only relevant when baking materials.
+        # If bake is disabled, naked faces don't affect export correctness.
+        from .materials import (check_naked_faces, CHAIN_NAMES,
+            ISLAND_SUB_NAMES, ISLAND_MARKER_NAME, FBXMT_FLOOR_MATERIALS,
+            FBXMT_WALL_MATERIALS, FBXMT_IGNORE_MATERIAL, _is_island_sub_material)
         bake_textures  = props.bake_textures
+        if bake_textures:
+            naked = check_naked_faces(mesh_objects)
+            if naked:
+                bpy.ops.object.select_all(action='DESELECT')
+                for name in naked:
+                    obj = bpy.data.objects.get(name)
+                    if obj:
+                        obj.select_set(True)
+                first = bpy.data.objects.get(next(iter(naked)))
+                if first:
+                    context.view_layer.objects.active = first
+                names  = ', '.join(list(naked.keys())[:5])
+                suffix = f' (+{len(naked)-5} more)' if len(naked) > 5 else ''
+                total  = sum(naked.values())
+                self.report(
+                    {'ERROR'},
+                    f"Export halted — {total} naked face(s) on {len(naked)} object(s): {names}{suffix}. "
+                    f"Assign materials to all faces before exporting."
+                )
+                return {'CANCELLED'}
         prefs          = bpy.context.scene.fbxmt_prefs_global
         label_grid     = bake_textures and prefs and prefs.bake_labels
         checker_scale  = prefs.checker_scale if prefs else 4
         tex_dir = os.path.join(os.path.normpath(final_dir), 'Textures')
+        _used_cache = False
         if bake_textures:
-            os.makedirs(tex_dir, exist_ok=True)
+            if cache_is_valid(context.scene):
+                # Fast path — pre-baked cache is fresh, copy PNGs directly
+                copy_cache_to_textures(context.scene, tex_dir)
+                _used_cache = True
+            else:
+                os.makedirs(tex_dir, exist_ok=True)
         baked       = 0
         bake_failed = []
         baked_mats  = set()   # track across objects — bake each material only once
@@ -82,8 +102,8 @@ class OT_FBXMT_Export(Operator):
             # Enforce UV channel order: slot 0 = diffuse UVMap, slot 1 = LightmapUVs
             self._enforce_uv_order(src_obj.data)
 
-            # Bake materials on this object (skip already-baked ones)
-            if bake_textures:
+            # Bake materials on this object (skip already-baked ones, skip if cache used)
+            if bake_textures and not _used_cache:
                 for slot in src_obj.material_slots:
                     mat = slot.material
                     if mat and mat.name not in baked_mats:
@@ -100,6 +120,63 @@ class OT_FBXMT_Export(Operator):
                 if bake_failed:
                     self.report({'WARNING'}, f"Bake failed for: {', '.join(bake_failed)}")
                     bake_failed.clear()
+
+            # ── Pre-export: swap island sub-materials for surface-detected base mats
+            # Island sub-materials are internal UV tools — they should not ship in the FBX.
+            # Run normal detection on each island face and assign the appropriate base mat.
+            mesh      = src_obj.data
+            import bmesh as _bmesh
+            from mathutils import Vector as _Vec
+            _bm = _bmesh.new()
+            _bm.from_mesh(mesh)
+            _bm.faces.ensure_lookup_table()
+            _slot_names = [m.name if m else None for m in mesh.materials]
+            _island_slot_idxs = {
+                i for i, n in enumerate(_slot_names)
+                if n and (n.startswith('M_FBXMT_Island_') or n in set(CHAIN_NAMES))
+            }
+            _wm = src_obj.matrix_world
+            _floor_mat  = bpy.data.materials.get('M_FBXMT_Floor')
+            _ceil_mat   = bpy.data.materials.get('M_FBXMT_Ceiling')
+            _wall_mat   = bpy.data.materials.get('M_FBXMT_Wall')
+            # Ensure base mats are slotted
+            _existing = {m.name for m in mesh.materials if m}
+            for _bm_mat in [_floor_mat, _ceil_mat, _wall_mat]:
+                if _bm_mat and _bm_mat.name not in _existing:
+                    mesh.materials.append(_bm_mat)
+                    _existing.add(_bm_mat.name)
+            _slot_names = [m.name if m else None for m in mesh.materials]
+            _floor_idx = _slot_names.index('M_FBXMT_Floor')   if 'M_FBXMT_Floor'   in _slot_names else None
+            _ceil_idx  = _slot_names.index('M_FBXMT_Ceiling') if 'M_FBXMT_Ceiling' in _slot_names else None
+            _wall_idx  = _slot_names.index('M_FBXMT_Wall')    if 'M_FBXMT_Wall'    in _slot_names else None
+            _threshold = math.cos(math.radians(45.0))
+            for _face in _bm.faces:
+                if _face.material_index not in _island_slot_idxs:
+                    continue
+                _world_normal = (_wm.to_3x3() @ _face.normal).normalized()
+                _dot = _world_normal.dot(_Vec(0, 0, 1))
+                if _dot > _threshold and _floor_idx is not None:
+                    _face.material_index = _floor_idx
+                elif _dot < -_threshold and _ceil_idx is not None:
+                    _face.material_index = _ceil_idx
+                elif _wall_idx is not None:
+                    _face.material_index = _wall_idx
+            _bm.to_mesh(mesh)
+            _bm.free()
+            mesh.update()
+
+            # Strip all island sub-material and legacy chain slots — now unassigned
+            used_idxs = {face.material_index for face in mesh.polygons}
+            strip_idxs = [
+                i for i, slot in enumerate(mesh.materials)
+                if slot and (
+                    slot.name in set(ISLAND_SUB_NAMES) or
+                    slot.name == ISLAND_MARKER_NAME or
+                    slot.name in set(CHAIN_NAMES)
+                ) and i not in used_idxs
+            ]
+            for i in reversed(strip_idxs):
+                mesh.materials.pop(index=i)
 
             # UCX collision copy
             ucx_obj = None
@@ -273,6 +350,11 @@ class OT_FBXMT_Export(Operator):
         prev_samples         = scene.cycles.samples
         scene.render.engine  = 'CYCLES'
         scene.cycles.samples = max(scene.cycles.samples, 1)
+        cycles_prefs = bpy.context.preferences.addons.get('cycles')
+        if cycles_prefs and cycles_prefs.preferences.compute_device_type != 'NONE':
+            scene.cycles.device = 'GPU'
+        else:
+            scene.cycles.device = 'CPU'
 
         # Create temporary bake quad
         bpy.ops.mesh.primitive_plane_add(size=1.0)

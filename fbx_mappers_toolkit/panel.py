@@ -1,7 +1,59 @@
 import bpy
 from bpy.types import Panel, AddonPreferences, UIList
 from .materials import LIGHTMAP_CHANNEL_NAME
-from .props import FBXMT_GlobalPrefs, FBXMT_Props
+from .props import FBXMT_GlobalPrefs, FBXMT_Props, PATTERN_ITEMS, _COLOR_B_MODE_ITEMS
+
+# Slot key for each material in display order — must match props naming convention
+_MAT_DISPLAY_ORDER = [
+    ('floor',   'M_FBXMT_Floor'),
+    ('ceiling', 'M_FBXMT_Ceiling'),
+    ('wall',    'M_FBXMT_Wall'),
+    ('trim',    'M_FBXMT_Trim'),
+    ('ignore',  'M_FBXMT_Ignore'),
+    ('island',  'M_FBXMT_Island'),
+]
+
+
+# Name → slot key mapping (inverse of _MAT_DISPLAY_ORDER)
+_MAT_NAME_TO_SLOT = {mat_name: slot for slot, mat_name in _MAT_DISPLAY_ORDER}
+
+
+def _draw_material_colour_controls(layout, prefs, slot):
+    """Draw the pattern dropdown, colour B mode dropdown, and conditional B control."""
+    pattern_prop  = f'checker_pattern_{slot}'
+    mode_prop     = f'color_b_mode_{slot}'
+    col_a_prop    = f'color_{slot}_a'
+    col_b_prop    = f'color_{slot}_b'
+    darker_prop   = f'color_b_darker_{slot}'
+    grey_prop     = f'color_b_grey_{slot}'
+
+    # ── Two dropdowns side by side ────────────────────────────────────────────
+    row = layout.row(align=True)
+    row.prop(prefs, pattern_prop, text="")
+    row.prop(prefs, mode_prop,    text="")
+
+    # ── Box: Colour A always, Colour B conditional ────────────────────────────
+    box  = layout.box()
+    mode = getattr(prefs, mode_prop, 'MANUAL')
+
+    # Colour A — always a free picker, full width
+    box.prop(prefs, col_a_prop, text="A")
+
+    # Colour B — depends on mode, below A
+    if mode == 'MANUAL':
+        box.prop(prefs, col_b_prop, text="B")
+
+    elif mode == 'DARKER':
+        box.label(text="B — Lighter / Darker")
+        box.prop(prefs, darker_prop, text="", slider=True)
+
+    elif mode == 'GREYSCALE':
+        box.label(text="B — Grey Level")
+        box.prop(prefs, grey_prop, text="", slider=True)
+
+    elif mode == 'INVERSE':
+        box.label(text="B — inverse of A", icon='INFO')
+
 
 
 # Blender 5.x extensions use a prefixed package name at runtime.
@@ -17,10 +69,17 @@ def set_addon_id(pkg):
 class FBXMT_AddonPreferences(AddonPreferences):
     bl_idname = __package__  # patched in register() before register_class
 
+    show_setup_on_new: bpy.props.BoolProperty(
+        name="Show Project Setup on New Project",
+        description="Automatically open the Project Setup window when creating a new FBXMT project from the template",
+        default=True,
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="Preferences are in the FBX Toolkit N-panel.", icon="INFO")
         layout.label(text="Open the 3D Viewport, press N, select the FBX Toolkit tab.")
+        layout.prop(self, "show_setup_on_new")
 
 
 
@@ -61,6 +120,7 @@ class FBXMT_PT_SceneSetup(Panel):
     bl_label       = "Scene Setup"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 5
 
     def draw(self, context):
         layout = self.layout
@@ -83,7 +143,11 @@ class FBXMT_PT_SceneSetup(Panel):
 
 
         layout.separator()
-        layout.operator("fbxmt.save_template", text="Save Startup Template", icon="FILE_BLEND")
+        row = layout.row()
+        row.scale_y = 1.3
+        row.operator("fbxmt.project_setup", text="Project Setup…", icon="SETTINGS")
+        layout.separator()
+        layout.operator("fbxmt.save_template", text="Save Startup Template", icon="LAYERGROUP_COLOR_02")
         layout.label(text="Saves current scene as template - restart Blender after", icon="INFO")
 
 
@@ -95,6 +159,7 @@ class FBXMT_PT_Materials(Panel):
     bl_label       = "Materials"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 1
 
     def draw(self, context):
         layout = self.layout
@@ -113,63 +178,63 @@ class FBXMT_PT_Materials(Panel):
         row.scale_y = 1.2
         row.operator("fbxmt.assign_materials", text="Auto-Assign by Normal", icon="FACE_MAPS")
 
+
         row = layout.row()
         row.scale_y = 1.1
         row.alert = True
+        row.operator_context = 'INVOKE_DEFAULT'
         row.menu("FBXMT_MT_Clear_Menu", text="Clear...", icon="TRASH")
 
-        if not mesh:
-            layout.separator()
-            layout.label(text="No mesh selected", icon="INFO")
-            return
-
         layout.separator()
 
-        # ── Base Materials list ───────────────────────────────────────────────
-        base_box = layout.box()
-        base_box.label(text="Surface Materials", icon="MATERIAL")
-
-        base_row = base_box.row()
-        base_row.template_list(
-            "FBXMT_UL_base_materials", "",
-            mesh, "materials",
+        # ── Single unified material list ──────────────────────────────────────
+        # Fixed order: Floor, Ceiling, Wall, Trim, Ignore, Island 01-05.
+        # Sourced from bpy.data.materials — always visible, no object needed.
+        # NOTE: Do NOT write to fbxmt_base_list_index here — mutating props
+        # during draw() re-enters the layout system and causes an access
+        # violation inside blender::ui::template_list. The UIList itself
+        # clamps the active index internally; we only need to guard our own
+        # slot lookup below.
+        mat_box = layout.box()
+        mat_box.label(text="Materials", icon="MATERIAL")
+        mat_box.template_list(
+            "FBXMT_UL_all_materials", "",
+            bpy.data, "materials",
             scene, "fbxmt_base_list_index",
-            rows=5,
+            rows=10,
         )
 
         layout.separator()
 
-        # ── Island Materials list ─────────────────────────────────────────────
-        island_box = layout.box()
-        island_box.label(text="Island Materials", icon="UGLYPACKAGE")
+        # ── Per-material colour and pattern controls ───────────────────────────
+        prefs = scene.fbxmt_prefs_global
+        active_idx = scene.fbxmt_base_list_index
 
-        island_row = island_box.row()
-        island_row.template_list(
-            "FBXMT_UL_chain_materials", "",
-            mesh, "materials",
-            scene, "fbxmt_island_list_index",
-            rows=4,
-        )
-        btn_col = island_row.column(align=True)
-        btn_col.operator("fbxmt.add_chain_material", text="", icon="ADD")
-        btn_col.operator("fbxmt.delete_chain_material", text="", icon="REMOVE")
+        # Resolve the active material name from the global pool, then map to slot.
+        # We cannot use active_idx directly — filter_items reorders the display
+        # but the stored index points into bpy.data.materials, not our canonical order.
+        active_mat  = bpy.data.materials[active_idx] if 0 <= active_idx < len(bpy.data.materials) else None
+        active_slot = _MAT_NAME_TO_SLOT.get(active_mat.name if active_mat else '', None)
 
-        # Colour pickers — shown only when island list has an active selection
-        if scene.fbxmt_island_selected:
-            all_mats   = list(mesh.materials)
-            isl_idx    = scene.fbxmt_island_list_index
-            sel_island = all_mats[isl_idx] if 0 <= isl_idx < len(all_mats) else None
-            if sel_island and sel_island.name.startswith('M_FBXMT_Chain_'):
-                picker_row = island_box.row(align=True)
-                picker_row.prop(scene, "fbxmt_chain_color_a", text="A")
-                picker_row.prop(scene, "fbxmt_chain_color_b", text="B")
+        if active_slot:
+            mat_name   = dict(_MAT_DISPLAY_ORDER)[active_slot]
+            colour_box = layout.box()
+            colour_box.label(text=mat_name.replace('M_FBXMT_', '').replace('_', ' '), icon="MATERIAL")
+
+            if active_slot == 'island':
+                # Island marker colour is always derived from Wall A — no picker needed
+                colour_box.label(text="Colour A tracks Wall A", icon='INFO')
+                colour_box.label(text="Pattern set per material:")
+                colour_box.prop(prefs, 'checker_pattern_island', text="")
+            else:
+                _draw_material_colour_controls(colour_box, prefs, active_slot)
+
+            colour_box.separator()
+            row = colour_box.row()
+            row.scale_y = 1.2
+            row.operator("fbxmt.rebuild_materials", text="Update Material", icon="FILE_REFRESH")
 
         layout.separator()
-
-        # ── Shared face operators ─────────────────────────────────────────────
-        # Both buttons require Edit mode — poll() handles greying out.
-        # Track which list was last clicked via fbxmt_active_list so the
-        # operators know which selection to act on.
         face_box = layout.box()
         face_box.label(
             text="Edit Mode - select faces, then:",
@@ -180,6 +245,13 @@ class FBXMT_PT_Materials(Panel):
         face_row.operator("fbxmt.assign_to_faces",    text="Assign",   icon="BRUSH_DATA")
         face_row.operator("fbxmt.select_by_material", text="Select",   icon="RESTRICT_SELECT_OFF")
 
+        layout.separator()
+
+        # Auto-colour island marker faces by adjacency graph
+        island_row = layout.row()
+        island_row.scale_y = 1.2
+        island_row.operator("fbxmt.colour_islands", text="Auto-Colour Islands", icon="OUTLINER_OB_LATTICE")
+
 
 # ─── Import ───────────────────────────────────────────────────────────────────
 
@@ -189,12 +261,23 @@ class FBXMT_PT_Import(Panel):
     bl_label       = "Import"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 3
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
-        row = self.layout.row()
+        layout  = self.layout
+        props   = context.scene.fbxmt_props
+
+        row = layout.row(align=True)
         row.scale_y = 1.3
         row.menu("FBXMT_MT_Import_Dropdown", text="Import...", icon="IMPORT")
+
+        # Quick Import — fires the stored import type in one click
+        qt = props.quick_import_type
+        op = row.operator("fbxmt.import_fbx", text="Quick Import", icon="INDIRECT_ONLY_ON")
+        op.import_type = qt
+
+        layout.prop(props, "quick_import_type", text="")
 
 
 # ─── UV Maps & Unwrap ─────────────────────────────────────────────────────────
@@ -205,6 +288,7 @@ class FBXMT_PT_UVUnwrap(Panel):
     bl_label       = "UV Maps & Unwrap"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 2
 
     def draw(self, context):
         layout = self.layout
@@ -246,78 +330,6 @@ class FBXMT_PT_UVUnwrap(Panel):
         )
 
 
-# ─── Addon Preferences (N-panel) ─────────────────────────────────────────────
-
-class FBXMT_PT_AddonPrefs(Panel):
-    bl_space_type  = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_label       = "Preferences"
-    bl_category    = "FBX Toolkit"
-    bl_parent_id   = "FBXMT_PT_Main"
-    bl_options     = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout = self.layout
-        prefs  = context.scene.fbxmt_prefs_global
-        if prefs is None:
-            layout.label(text="Preferences unavailable - try reloading the addon", icon="ERROR")
-            return
-
-        # Export — stored per blend file on the scene
-        box = layout.box()
-        box.label(text="Export", icon="EXPORT")
-        box.prop(context.scene.fbxmt_props, "export_path", text="Folder")
-
-        # Workflow Defaults
-        box = layout.box()
-        box.label(text="Workflow Defaults", icon="SETTINGS")
-        box.prop(prefs, "prep_on_import")
-
-        # Checker Appearance
-        box = layout.box()
-        box.label(text="Checker Appearance", icon="MATERIAL")
-        box.label(text="Changes apply on next Rebuild", icon="INFO")
-        row = box.row(align=True)
-        row.label(text="Checker Squares/Tile:")
-        btn_row = box.row(align=True)
-        for val in (1, 2, 4, 8):
-            op = btn_row.operator("fbxmt.set_checker_scale", text=str(val),
-                                  depress=(prefs.checker_scale == val))
-            op.value = val
-        box.label(text="Corner Mark Length:")
-        preset_row = box.row(align=True)
-        preset_labels = {1: "12.5%", 2: "25%", 3: "37.5%", 4: "50%"}
-        for val in (1, 2, 3, 4):
-            op = preset_row.operator("fbxmt.set_corner_preset", text=preset_labels[val],
-                                     depress=(prefs.corner_mark_preset == val))
-            op.value = val
-        box.prop(prefs, "corner_mark_width_px")
-        box.prop(prefs, "show_corner_circle")
-        box.prop(prefs, "bake_labels")
-        box.separator(factor=0.5)
-        mat_colours = [
-            ("Floor",   "color_floor_a",   "color_floor_b"),
-            ("Ceiling", "color_ceiling_a", "color_ceiling_b"),
-            ("Wall",    "color_wall_a",    "color_wall_b"),
-            ("Trim",    "color_trim_a",    "color_trim_b"),
-            ("Ignore",  "color_ignore_a",  "color_ignore_b"),
-        ]
-        for label, prop_a, prop_b in mat_colours:
-            row = box.row(align=True)
-            row.label(text=label + ":")
-            row.prop(prefs, prop_a, text="A")
-            row.prop(prefs, prop_b, text="B")
-        box.separator(factor=0.5)
-        box.label(text="Chain_01 Checkerboard")
-        row = box.row(align=True)
-        row.prop(prefs, "color_chain01_a", text="A")
-        row.prop(prefs, "color_chain01_b", text="B")
-
-        layout.separator()
-        row = layout.row()
-        row.scale_y = 1.3
-        row.operator("fbxmt.rebuild_materials", text="Rebuild Materials", icon="FILE_REFRESH")
-
 
 # ─── Export ───────────────────────────────────────────────────────────────────
 
@@ -327,6 +339,7 @@ class FBXMT_PT_Export(Panel):
     bl_label       = "Export"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 4
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -365,6 +378,10 @@ class FBXMT_PT_Export(Panel):
         )
 
         layout.separator()
+
+        row = layout.row()
+        row.scale_y = 1.2
+        row.operator("fbxmt.check_mesh", text="Check Mesh", icon="CHECKMARK")
 
         row = layout.row()
         row.scale_y = 1.4
