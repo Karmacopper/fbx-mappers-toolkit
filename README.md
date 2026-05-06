@@ -1,6 +1,6 @@
 # FBX Mapper's Toolkit
 
-**Blender 5.1 Extension — UV unwrapping and material management for UE5 map geometry**
+**Blender 5.1 Extension — UV unwrapping and material management for game engine (UE5 Godot Unity et al)map geometry**
 
 Inspired by UnrealEd / UT99 surface texturing. Built for mappers who want to work fast and stay accurate.
 
