@@ -35,7 +35,7 @@ from .materials import (
     register_material_props,
     unregister_material_props,
 )
-from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove
+from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview
 from .props import FBXMT_GlobalPrefs, FBXMT_Props
 from .project_setup import register as register_project_setup, unregister as unregister_project_setup
 from .panel import (
@@ -63,6 +63,7 @@ classes = (
     FBXMT_MT_Import_Dropdown,  # Menu — must be registered manually
     OT_FBXMT_UV_Add,
     OT_FBXMT_UV_Remove,
+    OT_FBXMT_UV_Preview,
     OT_FBXMT_Scene_Setup,
     OT_FBXMT_Add_Materials,
     OT_FBXMT_Rebuild_Materials,

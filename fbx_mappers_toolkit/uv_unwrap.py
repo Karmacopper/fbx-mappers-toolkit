@@ -499,3 +499,118 @@ class OT_FBXMT_UV_Unwrap(Operator):
             self.report({'INFO'}, f"Unwrapped {total} face(s) across {len(mesh_objects)} object(s)")
 
         return {'FINISHED'}
+
+
+# ─── UV Preview Mesh Operator ─────────────────────────────────────────────────
+
+class OT_FBXMT_UV_Preview(Operator):
+    """Build a flat mesh from UVMap coordinates and show it in a UV_Preview
+    collection. Each selected object gets its own mesh, coloured by material.
+    The result looks identical to the UV Editor but lives in the 3D viewport
+    so Numpad-dot frames it correctly regardless of island extents.
+    """
+    bl_idname  = 'fbxmt.uv_preview'
+    bl_label   = 'Preview UVs as Mesh'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'OBJECT' and
+            any(obj.type == 'MESH' for obj in context.selected_objects)
+        )
+
+    def execute(self, context):
+        import bmesh as _bmesh
+
+        PREVIEW_COLLECTION = 'UV_Preview'
+        UV_LAYER_NAME      = 'UVMap'
+
+        # ── Clear existing preview collection ─────────────────────────────────
+        if PREVIEW_COLLECTION in bpy.data.collections:
+            col = bpy.data.collections[PREVIEW_COLLECTION]
+            for obj in list(col.objects):
+                bpy.data.meshes.remove(obj.data, do_unlink=True)
+            bpy.data.collections.remove(col)
+
+        preview_col = bpy.data.collections.new(PREVIEW_COLLECTION)
+        context.scene.collection.children.link(preview_col)
+
+        # ── Texel tile scale: 1 UV unit = tile_size world units ───────────────
+        props     = context.scene.fbxmt_props
+        tile_size = 1024.0 / props.geo_texel_density  # metres per UV unit
+
+        mesh_objects = [o for o in context.selected_objects if o.type == 'MESH']
+        created      = 0
+
+        for src_obj in mesh_objects:
+            src_mesh = src_obj.data
+            uv_layer = src_mesh.uv_layers.get(UV_LAYER_NAME)
+            if not uv_layer:
+                continue
+
+            # ── Build flat mesh from UV coordinates ───────────────────────────
+            new_mesh = bpy.data.meshes.new(f'UV_{src_obj.name}')
+            bm       = _bmesh.new()
+
+            uv_data = uv_layer.data  # one entry per loop
+
+            # Collect per-polygon UV loops and build verts
+            for poly in src_mesh.polygons:
+                face_verts = []
+                for loop_idx in poly.loop_indices:
+                    uv  = uv_data[loop_idx].uv
+                    vert = bm.verts.new((uv.x * tile_size, uv.y * tile_size, 0.0))
+                    face_verts.append(vert)
+                try:
+                    bm.faces.new(face_verts)
+                except Exception:
+                    pass  # degenerate face — skip
+
+            bm.to_mesh(new_mesh)
+            bm.free()
+
+            # ── Assign material colours matching source mesh ───────────────────
+            # One material slot per source material, same colour
+            slot_mats = list(src_mesh.materials)
+            for mat in slot_mats:
+                if mat:
+                    new_mesh.materials.append(mat)
+
+            # Assign material_index per face to match source
+            for i, poly in enumerate(src_mesh.polygons):
+                if i < len(new_mesh.polygons):
+                    new_mesh.polygons[i].material_index = poly.material_index
+
+            new_mesh.update()
+
+            new_obj      = bpy.data.objects.new(f'UV_{src_obj.name}', new_mesh)
+            new_obj.location = (0, 0, 0)
+            preview_col.objects.link(new_obj)
+            created += 1
+
+        # ── Add a tile grid overlay at 0,0 ────────────────────────────────────
+        # Draw a simple 4x4 grid of tile outlines so you can read UV placement
+        grid_mesh = bpy.data.meshes.new('UV_Grid')
+        bm        = _bmesh.new()
+        grid_range = range(-2, 5)  # -2 to +4 tiles
+        for gx in grid_range:
+            for gy in grid_range:
+                x0, y0 = gx * tile_size, gy * tile_size
+                x1, y1 = x0 + tile_size, y0 + tile_size
+                v0 = bm.verts.new((x0, y0, -0.001))
+                v1 = bm.verts.new((x1, y0, -0.001))
+                v2 = bm.verts.new((x1, y1, -0.001))
+                v3 = bm.verts.new((x0, y1, -0.001))
+                bm.edges.new((v0, v1))
+                bm.edges.new((v1, v2))
+                bm.edges.new((v2, v3))
+                bm.edges.new((v3, v0))
+        bm.to_mesh(grid_mesh)
+        bm.free()
+        grid_obj          = bpy.data.objects.new('UV_Grid', grid_mesh)
+        grid_obj.location = (0, 0, 0)
+        preview_col.objects.link(grid_obj)
+
+        self.report({'INFO'}, f'UV preview built for {created} object(s) — frame with Numpad .')
+        return {'FINISHED'}

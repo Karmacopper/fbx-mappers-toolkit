@@ -329,6 +329,10 @@ class FBXMT_PT_UVUnwrap(Panel):
             icon="UV_DATA",
         )
 
+        row = layout.row()
+        row.scale_y = 1.2
+        row.operator("fbxmt.uv_preview", text="Preview UVs as Mesh", icon="MESH_GRID")
+
 
 
 # ─── Export ───────────────────────────────────────────────────────────────────
