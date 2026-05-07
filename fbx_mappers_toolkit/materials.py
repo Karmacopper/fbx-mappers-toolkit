@@ -34,8 +34,9 @@ ISLAND_MARKER_NAME = 'M_FBXMT_Island'
 ISLAND_SUB_PREFIX  = 'M_FBXMT_Island_'
 ISLAND_SUB_COUNT   = 15
 ISLAND_SUB_NAMES   = [f'M_FBXMT_Island_{i:02d}' for i in range(1, ISLAND_SUB_COUNT + 1)]
-# Grey B values evenly spread 0..1 across 15 steps
-ISLAND_SUB_GREYS   = [i / (ISLAND_SUB_COUNT - 1) for i in range(ISLAND_SUB_COUNT)]
+# B values for sub-materials: cycle through 5 darkness steps, repeated across 15 slots
+# Step darknesses: 100%, 80%, 60%, 40%, 20% of parent Colour B toward black
+_ISLAND_B_STEP_COUNT = 5
 
 # Keep CHAIN_PREFIX/CHAIN_NAMES as legacy aliases so existing blend files
 # that still reference old chain materials don't hard-error on import.
@@ -61,6 +62,12 @@ COLLECTION_GEO        = 'Geo'
 COLLECTION_PROPS      = 'Props'
 COLLECTION_TRIM       = 'Trim'
 LIGHTMAP_CHANNEL_NAME = 'LightmapUVs'
+PREVIEW_UV_NAME       = 'UVPreview'
+
+# Island B step offsets from inverted-B centre lightness
+# [-0.5, -0.25, 0, +0.25, +0.5] — clamped 0-1 at use time
+ISLAND_B_STEP_OFFSETS = [-0.5, -0.25, 0.0, 0.25, 0.5]
+ISLAND_B_STEPS = [0.0, 0.25, 0.50, 0.75, 1.0]  # legacy — replaced by offsets
 
 
 # Module-level flag — set True while operators are mutating material slots so
@@ -612,15 +619,20 @@ def ensure_island_materials():
         mat = bpy.data.materials[ISLAND_MARKER_NAME]
     _build_checker_node_tree(mat, col_a, (0.5, 0.5, 0.5))
 
-    # Hidden sub-materials — always rebuild to pick up current wall colour
+    # Hidden sub-materials — invert wall A, use as centre of 5 lightness steps
+    inv_a      = (1.0 - col_a[0], 1.0 - col_a[1], 1.0 - col_a[2])
+    h_i, l_i, s_i = colorsys.rgb_to_hls(*inv_a)
+    _offsets   = [-0.5, -0.25, 0.0, 0.25, 0.5]
+    _step_cols = [colorsys.hls_to_rgb(h_i, max(0.15, min(0.85, l_i + off)), s_i) for off in _offsets]
+
     for i, name in enumerate(ISLAND_SUB_NAMES):
         if name not in bpy.data.materials:
             mat = bpy.data.materials.new(name=name)
             created.append(name)
         else:
             mat = bpy.data.materials[name]
-        grey = ISLAND_SUB_GREYS[i]
-        _build_checker_node_tree(mat, col_a, (grey, grey, grey))
+        col_b = _step_cols[i % len(_step_cols)]
+        _build_checker_node_tree(mat, col_a, col_b)
     return created
 
 
@@ -712,11 +724,15 @@ def rebuild_fbxmt_materials():
         _build_checker_node_tree(marker, col_a_island, (0.5, 0.5, 0.5), pattern=pattern_island)
         rebuilt.append(ISLAND_MARKER_NAME)
 
-        # Hidden sub-materials — evenly spaced grey B
+        # Hidden sub-materials — invert wall A, use as centre of 5 lightness steps
+        inv_a      = (1.0 - col_a_island[0], 1.0 - col_a_island[1], 1.0 - col_a_island[2])
+        h_i, l_i, s_i = colorsys.rgb_to_hls(*inv_a)
+        _offsets   = [-0.5, -0.25, 0.0, 0.25, 0.5]
+        _step_cols = [colorsys.hls_to_rgb(h_i, max(0.15, min(0.85, l_i + off)), s_i) for off in _offsets]
         for i, name in enumerate(ISLAND_SUB_NAMES):
-            mat  = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
-            grey = ISLAND_SUB_GREYS[i]
-            _build_checker_node_tree(mat, col_a_island, (grey, grey, grey), pattern=pattern_island)
+            mat   = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
+            col_b = _step_cols[i % len(_step_cols)]
+            _build_checker_node_tree(mat, col_a_island, col_b, pattern=pattern_island)
             rebuilt.append(name)
     except Exception:
         pass
@@ -1186,9 +1202,17 @@ class OT_FBXMT_Assign_To_Faces(Operator):
         self.report({'INFO'}, f'Assigned {alias} to {assigned} face(s)')
 
         # Auto-colour islands when the Island Marker is assigned
+        # Deferred via timer — ensures mode switch completes before operator fires
         if mat.name == ISLAND_MARKER_NAME and assigned > 0:
+            mesh.update()
             bpy.ops.object.mode_set(mode='OBJECT')
-            bpy.ops.fbxmt.colour_islands('EXEC_DEFAULT')
+            def _deferred_colour():
+                try:
+                    bpy.ops.fbxmt.colour_islands('EXEC_DEFAULT')
+                except Exception as e:
+                    print(f'[FBXMT] Deferred colour_islands failed: {e}')
+                return None
+            bpy.app.timers.register(_deferred_colour, first_interval=0.05)
             bpy.ops.object.mode_set(mode='EDIT')
 
         return {'FINISHED'}

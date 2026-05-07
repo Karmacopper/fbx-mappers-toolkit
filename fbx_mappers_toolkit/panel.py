@@ -1,6 +1,6 @@
 import bpy
 from bpy.types import Panel, AddonPreferences, UIList
-from .materials import LIGHTMAP_CHANNEL_NAME
+from .materials import LIGHTMAP_CHANNEL_NAME, PREVIEW_UV_NAME
 from .props import FBXMT_GlobalPrefs, FBXMT_Props, PATTERN_ITEMS, _COLOR_B_MODE_ITEMS
 
 # Slot key for each material in display order — must match props naming convention
@@ -75,11 +75,19 @@ class FBXMT_AddonPreferences(AddonPreferences):
         default=True,
     )
 
+    presets_path: bpy.props.StringProperty(
+        name="Presets Folder",
+        description="Folder where material presets (.json) are stored. Point a team at a shared network folder.",
+        subtype='DIR_PATH',
+        default='',
+    )
+
     def draw(self, context):
         layout = self.layout
         layout.label(text="Preferences are in the FBX Toolkit N-panel.", icon="INFO")
         layout.label(text="Open the 3D Viewport, press N, select the FBX Toolkit tab.")
         layout.prop(self, "show_setup_on_new")
+        layout.prop(self, "presets_path")
 
 
 
@@ -179,11 +187,10 @@ class FBXMT_PT_Materials(Panel):
         row.operator("fbxmt.assign_materials", text="Auto-Assign by Normal", icon="FACE_MAPS")
 
 
-        row = layout.row()
-        row.scale_y = 1.1
-        row.alert = True
-        row.operator_context = 'INVOKE_DEFAULT'
-        row.menu("FBXMT_MT_Clear_Menu", text="Clear...", icon="TRASH")
+        alert_col = layout.column()
+        alert_col.alert = True
+        alert_col.scale_y = 1.1
+        alert_col.menu("FBXMT_MT_Clear_Menu", text="Clear...", icon="TRASH")
 
         layout.separator()
 
@@ -201,7 +208,7 @@ class FBXMT_PT_Materials(Panel):
             "FBXMT_UL_all_materials", "",
             bpy.data, "materials",
             scene, "fbxmt_base_list_index",
-            rows=10,
+            rows=6,
         )
 
         layout.separator()
@@ -310,7 +317,8 @@ class FBXMT_PT_UVUnwrap(Panel):
             active_uv  = mesh.uv_layers.active
             remove_row.enabled = (
                 active_uv is not None and
-                active_uv.name != LIGHTMAP_CHANNEL_NAME
+                active_uv.name != LIGHTMAP_CHANNEL_NAME and
+                active_uv.name != PREVIEW_UV_NAME
             )
             remove_row.operator("fbxmt.uv_remove", text="", icon="REMOVE")
         else:

@@ -1,4 +1,4 @@
-FBX Mapper's Toolkit v2.7.0
+FBX Mapper's Toolkit v2.8.0
 For Blender 5.1+ - Unreal Engine 5 Map Geometry Workflow
 
 Original exporter by Ja5mine (2021)
@@ -340,6 +340,32 @@ All other code is original work licensed under GPL v3.
 ------------------------------------------------------------------------
 CHANGELOG
 ------------------------------------------------------------------------
+
+2.8.0  Feature: Project Setup dialog overhauled. Tile preview uses fast
+       pure-Python/numpy renderer — no Cycles, near-instant. Tiles are
+       clickable material selectors with highlight on active tile.
+       Contact sheet updated to 3x2 layout for 6 visible materials.
+       Feature: Floor/Ceiling/Wall tiles show split view — top half
+       standard checker, bottom half island B stepping (inverted A colour
+       as centre, ±25%/±50% lightness steps).
+       Feature: Material preset system — save/load/delete named JSON
+       presets, team-shareable via configurable folder path in
+       AddonPreferences.
+       Feature: Apply B / Apply B to All split button in Project Setup.
+       Feature: UV Preview mesh — builds flat mesh from UVMap coordinates
+       in UV_Preview collection, enters local view automatically.
+       Feature: UVPreview UV channel — scaled-to-fit copy of UVMap,
+       created on every unwrap, stripped on export. Open UV Editor and
+       select UVPreview to see full layout within 0-1 space.
+       Feature: Checker scale now power-of-2 button row (1,2,4,8,16,32).
+       Feature: Island auto-colouring fires on assign, deferred via timer
+       to avoid edit-mode bmesh conflict.
+       Feature: Bare Island Marker faces route to wall unwrap path.
+       Fix: Update Tile cache hash skip removed — was silently doing
+       nothing after first run.
+       Fix: Contact sheet bilinear scale artefact — CELL_SIZE now matches
+       PREVIEW_SIZE, no scaling required.
+       Fix: Island B step cycling now per-square not per-pixel.
 
 2.7.0  Feature: Island marker system replaces 5 chain materials.
        M_FBXMT_Island is the single visible marker the artist assigns.

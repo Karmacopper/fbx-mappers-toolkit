@@ -37,7 +37,20 @@ from .materials import (
 )
 from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview
 from .props import FBXMT_GlobalPrefs, FBXMT_Props
-from .project_setup import register as register_project_setup, unregister as unregister_project_setup
+from .project_setup import (
+    FBXMT_OT_ProjectSetup,
+    FBXMT_OT_ProjectSetup_UpdateTile,
+    FBXMT_OT_ProjectSetup_Preview,
+    FBXMT_OT_ProjectSetup_ContactSheet,
+    FBXMT_OT_BakeAllModal,
+    OT_FBXMT_Preset_Save,
+    OT_FBXMT_Preset_Load,
+    OT_FBXMT_Preset_Delete,
+    OT_FBXMT_SelectTile,
+    OT_FBXMT_ApplyBToAll,
+    register as register_project_setup,
+    unregister as unregister_project_setup,
+)
 from .panel import (
     FBXMT_AddonPreferences,
     set_addon_id,

@@ -8,13 +8,60 @@ from .materials import (
     FBXMT_WALL_MATERIALS,
     FBXMT_IGNORE_MATERIAL,
     ISLAND_SUB_PREFIX,
+    ISLAND_MARKER_NAME,
     _island_sub_index,
     LIGHTMAP_CHANNEL_NAME,
+    PREVIEW_UV_NAME,
     # Legacy chain imports kept for old blend files
     CHAIN_PREFIX,
     _chain_index,
 )
 from .uv_pack import pack_islands
+
+
+def _build_preview_uv(mesh):
+    """Copy UVMap into UVPreview, scaled to fit inside 0-1 space.
+
+    Reads all UV coordinates from UVMap, finds the bounding box of the
+    full island layout, then scales and translates everything uniformly
+    so the tightest fit sits within 0-1 with a small margin. Creates
+    UVPreview if missing. Always overwrites existing UVPreview data.
+    """
+    src = mesh.uv_layers.get('UVMap')
+    if not src:
+        return
+
+    # Ensure UVPreview channel exists
+    if PREVIEW_UV_NAME not in mesh.uv_layers:
+        mesh.uv_layers.new(name=PREVIEW_UV_NAME)
+    dst = mesh.uv_layers[PREVIEW_UV_NAME]
+
+    # Find bounding box of all UVs in UVMap
+    min_u = min_v =  1e9
+    max_u = max_v = -1e9
+    for loop_uv in src.data:
+        u, v   = loop_uv.uv
+        min_u  = min(min_u, u)
+        min_v  = min(min_v, v)
+        max_u  = max(max_u, u)
+        max_v  = max(max_v, v)
+
+    span_u = max_u - min_u
+    span_v = max_v - min_v
+    if span_u < 1e-9 or span_v < 1e-9:
+        return  # degenerate — nothing to preview
+
+    # Uniform scale to fit within [margin, 1-margin]
+    margin = 0.02
+    scale  = (1.0 - 2 * margin) / max(span_u, span_v)
+
+    # Centre the layout in 0-1
+    offset_u = margin + (1.0 - 2 * margin - span_u * scale) * 0.5 - min_u * scale
+    offset_v = margin + (1.0 - 2 * margin - span_v * scale) * 0.5 - min_v * scale
+
+    for i, loop_uv in enumerate(src.data):
+        u, v = loop_uv.uv
+        dst.data[i].uv = (u * scale + offset_u, v * scale + offset_v)
 
 
 # ─── Material helpers ─────────────────────────────────────────────────────────
@@ -367,6 +414,9 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
             floor_faces.append(face)
         elif mat_name in FBXMT_WALL_MATERIALS:
             wall_faces.append(face)
+        elif mat_name == ISLAND_MARKER_NAME:
+            # Bare marker (not yet graph-coloured) — treat as wall
+            wall_faces.append(face)
         elif mat_name and is_island_sub_name(mat_name) and mat_name in island_sub_on_mesh:
             island_faces.setdefault(mat_name, []).append(face)
         elif mat_name and is_chain_mat_name(mat_name) and mat_name in chain_names_on_mesh:
@@ -487,6 +537,7 @@ class OT_FBXMT_UV_Unwrap(Operator):
             count = unwrap_mesh(
                 obj.data, obj.matrix_world, floor_threshold_dot, selected_only=True
             )
+            _build_preview_uv(obj.data)
             bpy.ops.object.mode_set(mode='EDIT')
             self.report({'INFO'}, f"Unwrapped {count} selected face(s)")
         else:
@@ -496,6 +547,7 @@ class OT_FBXMT_UV_Unwrap(Operator):
                 total += unwrap_mesh(
                     obj.data, obj.matrix_world, floor_threshold_dot, selected_only=False
                 )
+                _build_preview_uv(obj.data)
             self.report({'INFO'}, f"Unwrapped {total} face(s) across {len(mesh_objects)} object(s)")
 
         return {'FINISHED'}
@@ -612,5 +664,15 @@ class OT_FBXMT_UV_Preview(Operator):
         grid_obj.location = (0, 0, 0)
         preview_col.objects.link(grid_obj)
 
-        self.report({'INFO'}, f'UV preview built for {created} object(s) — frame with Numpad .')
+        self.report({'INFO'}, f'UV preview built for {created} object(s) — delete UV_Preview collection to return to scene')
+
+        # Select only the preview objects and enter local view
+        # so the workspace is isolated to the UV mesh — delete collection to exit
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in preview_col.objects:
+            obj.select_set(True)
+        if preview_col.objects:
+            context.view_layer.objects.active = list(preview_col.objects)[0]
+        bpy.ops.view3d.localview()
+
         return {'FINISHED'}

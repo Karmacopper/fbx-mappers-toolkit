@@ -63,8 +63,8 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     )
     checker_scale: bpy.props.IntProperty(
         name="Checker Squares/Tile",
-        description="Number of checker squares per UV tile (1, 2, 4, or 8). Applies on Rebuild.",
-        default=4, min=1, max=8,
+        description="Number of checker squares per UV tile — powers of 2. Applies on Rebuild.",
+        default=4, min=1, max=64,
     )
     corner_mark_preset: bpy.props.IntProperty(
         name="Corner Mark Length",
@@ -117,6 +117,7 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         description="Overlay A1-H8 grid coordinate labels on baked material PNGs",
         default=True,
     )
+
 
     # Legacy chain colour props removed — island marker system replaces chains.
 

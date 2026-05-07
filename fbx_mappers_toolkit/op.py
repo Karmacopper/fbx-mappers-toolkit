@@ -407,13 +407,18 @@ class OT_FBXMT_Export(Operator):
 
     @staticmethod
     def _enforce_uv_order(mesh):
-        """Ensure LightmapUVs sits at slot index 1.
+        """Ensure LightmapUVs sits at slot index 1. Strip UVPreview before export.
 
         Reads all UV data in a single bmesh pass, rebuilds layers in the
         correct order, then writes all data back in one pass per layer.
         O(layers × faces) not O(layers² × faces).
         """
         import bmesh
+        from .uv_unwrap import PREVIEW_UV_NAME
+
+        # Strip UVPreview — internal tool, never exported
+        if PREVIEW_UV_NAME in [l.name for l in mesh.uv_layers]:
+            mesh.uv_layers.remove(mesh.uv_layers[PREVIEW_UV_NAME])
 
         uv_names = [layer.name for layer in mesh.uv_layers]
         if LIGHTMAP_CHANNEL_NAME not in uv_names:
