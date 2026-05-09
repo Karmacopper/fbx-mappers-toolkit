@@ -31,9 +31,19 @@ FBXMT_ALL_MATERIALS   = FBXMT_FLOOR_MATERIALS | FBXMT_WALL_MATERIALS | {FBXMT_IG
 # Sub-materials share Colour A with the marker but get distinct grey B values
 # (0..100% in 15 steps). They are filtered from all panels and never baked.
 ISLAND_MARKER_NAME = 'M_FBXMT_Island'
-ISLAND_SUB_PREFIX  = 'M_FBXMT_Island_'
-ISLAND_SUB_COUNT   = 15
-ISLAND_SUB_NAMES   = [f'M_FBXMT_Island_{i:02d}' for i in range(1, ISLAND_SUB_COUNT + 1)]
+ISLAND_SUB_PREFIX  = 'M_FBXMT_Island_'  # used by op.py startswith check
+
+# Named by parent, interleaved Floor/Ceil/Wall for graph-colouring spread:
+# index 0=Floor_01, 1=Ceil_01, 2=Wall_01, 3=Floor_02, ... 14=Wall_05
+ISLAND_SUB_NAMES   = [
+    name
+    for i in range(1, 6)
+    for name in (
+        f'M_FBXMT_Island_Floor_{i:02d}',
+        f'M_FBXMT_Island_Ceil_{i:02d}',
+        f'M_FBXMT_Island_Wall_{i:02d}',
+    )
+]
 # B values for sub-materials: cycle through 5 darkness steps, repeated across 15 slots
 # Step darknesses: 100%, 80%, 60%, 40%, 20% of parent Colour B toward black
 _ISLAND_B_STEP_COUNT = 5
@@ -80,9 +90,11 @@ _suppress_handler = False
 # ─── Island marker helpers ───────────────────────────────────────────────────
 
 def _island_sub_index(mat_name):
-    """Return 1-based index of M_FBXMT_Island_NN, or None."""
-    m = re.fullmatch(re.escape(ISLAND_SUB_PREFIX) + r'(\d+)', mat_name)
-    return int(m.group(1)) if m else None
+    """Return 1-based index (1-15) of a named island sub-material, or None."""
+    try:
+        return ISLAND_SUB_NAMES.index(mat_name) + 1
+    except ValueError:
+        return None
 
 
 def _is_island_sub_material(mat):
@@ -135,27 +147,30 @@ def setup_material_nodes(mat, colour, scale=None, color_b=None, pattern='SQUARE'
     mat.diffuse_color = (*colour[:3], 1.0)
 
 
-def _resolve_color_b(color_a_rgb, mode, color_b_rgb, darker_idx=3, grey_idx=2):
+def _resolve_color_b(color_a_rgb, mode, color_b_rgb, darker_idx=1, grey_idx=2):
     """Return the resolved colour B as an RGB tuple.
 
-    mode='MANUAL'    — return color_b_rgb as-is (stored vector, index 0 = manual)
-    mode='DARKER'    — multiply A's lightness by _DARKER_MULTIPLIERS[darker_idx-1], clamped 0-1
-    mode='GREYSCALE' — return grey from _GREY_VALUES[grey_idx-1], ignores A
-    mode='INVERSE'   — rotate A's hue by 0.5, keep S and L
+    mode='DARKER'    — darken A's lightness by notch (1=25%, 2=50%, 3=75%)
+    mode='LIGHTER'   — lighten A's lightness by notch (1=25%, 2=50%, 3=75%)
+    mode='GREYSCALE' — return grey (1=25%, 2=50%, 3=75%)
+    mode='INVERSE'   — rotate A's hue by 180°, keep S and L
     """
-    if mode == 'MANUAL':
-        return tuple(color_b_rgb[:3])
+    # Notch → lightness offset: 1=0.25, 2=0.50, 3=0.75
+    _NOTCH_OFFSETS = [0.25, 0.50, 0.75]
 
     r, g, b = color_a_rgb[0], color_a_rgb[1], color_a_rgb[2]
 
-    if mode == 'DARKER':
+    if mode in ('DARKER', 'LIGHTER'):
         h, l, s = colorsys.rgb_to_hls(r, g, b)
-        mult     = _DARKER_MULTIPLIERS[max(0, min(6, darker_idx - 1))]
-        new_l    = max(0.0, min(1.0, l * mult))
+        offset  = _NOTCH_OFFSETS[max(0, min(2, darker_idx - 1))]
+        if mode == 'DARKER':
+            new_l = max(0.0, l - offset)
+        else:
+            new_l = min(1.0, l + offset)
         return colorsys.hls_to_rgb(h, new_l, s)
 
     if mode == 'GREYSCALE':
-        v = _GREY_VALUES[max(0, min(4, grey_idx - 1))]
+        v = _NOTCH_OFFSETS[max(0, min(2, grey_idx - 1))]
         return (v, v, v)
 
     if mode == 'INVERSE':
@@ -235,10 +250,51 @@ def _build_pattern_nodes(nodes, links, new_node, mapping_checker, pattern):
         links.new(add.outputs['Value'], lt.inputs[0])
         return lt.outputs['Value']
 
+    if pattern == 'CIRCLE':
+        # sqrt((fract(U)-0.5)² + (fract(V)-0.5)²) < sqrt(1/(2π))
+        # Radius chosen so circle area = 50% of checker square area.
+        # πr² = 0.5  →  r = sqrt(0.5/π) ≈ 0.3989
+        import math
+        EQUAL_AREA_R = math.sqrt(0.5 / math.pi)  # ≈ 0.3989
+        sub_u = new_node('ShaderNodeMath', -100, 460)
+        sub_u.operation = 'SUBTRACT'
+        sub_u.inputs[1].default_value = 0.5
+        links.new(frac_u.outputs['Value'], sub_u.inputs[0])
+
+        sub_v = new_node('ShaderNodeMath', -100, 360)
+        sub_v.operation = 'SUBTRACT'
+        sub_v.inputs[1].default_value = 0.5
+        links.new(frac_v.outputs['Value'], sub_v.inputs[0])
+
+        sq_u = new_node('ShaderNodeMath', 80, 460)
+        sq_u.operation = 'MULTIPLY'
+        links.new(sub_u.outputs['Value'], sq_u.inputs[0])
+        links.new(sub_u.outputs['Value'], sq_u.inputs[1])
+
+        sq_v = new_node('ShaderNodeMath', 80, 360)
+        sq_v.operation = 'MULTIPLY'
+        links.new(sub_v.outputs['Value'], sq_v.inputs[0])
+        links.new(sub_v.outputs['Value'], sq_v.inputs[1])
+
+        add = new_node('ShaderNodeMath', 260, 410)
+        add.operation = 'ADD'
+        links.new(sq_u.outputs['Value'], add.inputs[0])
+        links.new(sq_v.outputs['Value'], add.inputs[1])
+
+        sqrt = new_node('ShaderNodeMath', 440, 410)
+        sqrt.operation = 'SQRT'
+        links.new(add.outputs['Value'], sqrt.inputs[0])
+
+        lt = new_node('ShaderNodeMath', 620, 410)
+        lt.operation = 'LESS_THAN'
+        lt.inputs[1].default_value = EQUAL_AREA_R
+        links.new(sqrt.outputs['Value'], lt.inputs[0])
+        return lt.outputs['Value']
+
     return None  # unknown pattern — fall back to square
 
 
-def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE'):
+def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE', checker_invert=False):
     """Procedural checkerboard with texel-tile corner cross markers via Emission.
 
     Two independent mapping paths:
@@ -273,14 +329,13 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
     tile_scale = geo_texel_density / 1024.0
 
     # Corner marker constants — all fractions of one texel tile (1.0 in tile UV space).
-    # Preset 1-4 maps to 12.5/25/37.5/50% of tile.
-    preset        = prefs.corner_mark_preset if prefs else 2
-    BORDER_L      = preset * 0.125
-    CIRCLE_R      = BORDER_L * 0.5          # quarter-circle radius = half arm length
-    show_circle   = prefs.show_corner_circle if prefs else True
-    px            = prefs.corner_mark_width_px if prefs else 4
-    # Tile always = 1024px wide by definition of texel density.
-    BORDER_W = px / 1024.0
+    show_circle = prefs.show_corner_circle if prefs else True
+    show_lines  = getattr(prefs, 'show_corner_lines', False) if prefs else False
+    CIRCLE_PRESET = 2                              # circle always preset 2
+    LINE_PRESET   = 4 if show_lines else 2         # lines: extended or short
+    BORDER_L    = LINE_PRESET * 0.125              # arm length as fraction of tile
+    CIRCLE_R    = CIRCLE_PRESET * 0.125 * 0.5     # circle radius = half of preset 2
+    BORDER_W    = 8.0 / 1024.0                    # fixed 8px at 1024tx/m
 
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
@@ -313,23 +368,41 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
     links.new(mapping_checker.outputs['Vector'], checker.inputs['Vector'])
 
     # ── Pattern sub-graph ─────────────────────────────────────────────────────
-    # Returns a Value socket (0/1) for DIAGONAL and DIAMOND.
-    # Returns None for SQUARE — checker's own Fac output is used instead.
     pattern_factor = _build_pattern_nodes(
         nodes, links, new_node, mapping_checker, pattern
     )
 
     # For SQUARE, use the checker Fac directly.
-    # For DIAGONAL/DIAMOND, we need a separate A/B mix driven by pattern_factor.
-    # The checker node is still used to derive the invert colour for cross markers.
+    # For DIAGONAL/DIAMOND/CIRCLE, mix A/B by pattern_factor.
+    # checker_invert=True: XOR pattern with checker phase — alternating squares invert.
     if pattern_factor is not None:
-        # Pattern mix — pure A/B driven by pattern geometry
+        if checker_invert:
+            # XOR: add pattern_factor + checker.Fac, modulo 2, then > 0.5
+            xor_add = new_node('ShaderNodeMath', -200, 350)
+            xor_add.operation = 'ADD'
+            links.new(pattern_factor,               xor_add.inputs[0])
+            links.new(checker.outputs['Fac'],       xor_add.inputs[1])
+
+            xor_mod = new_node('ShaderNodeMath', 0, 350)
+            xor_mod.operation = 'MODULO'
+            xor_mod.inputs[1].default_value = 2.0
+            links.new(xor_add.outputs['Value'],     xor_mod.inputs[0])
+
+            xor_gt = new_node('ShaderNodeMath', 200, 350)
+            xor_gt.operation = 'GREATER_THAN'
+            xor_gt.inputs[1].default_value = 0.5
+            links.new(xor_mod.outputs['Value'],     xor_gt.inputs[0])
+
+            mix_factor = xor_gt.outputs['Value']
+        else:
+            mix_factor = pattern_factor
+
         pat_mix = new_node('ShaderNodeMix', -100, 300)
         pat_mix.data_type  = 'RGBA'
         pat_mix.blend_type = 'MIX'
         pat_mix.inputs['A'].default_value = (*color_a_rgb, 1.0)
         pat_mix.inputs['B'].default_value = (*color_b_rgb, 1.0)
-        links.new(pattern_factor, pat_mix.inputs['Factor'])
+        links.new(mix_factor, pat_mix.inputs['Factor'])
         checker_color_out = pat_mix.outputs['Result']
     else:
         checker_color_out = checker.outputs['Color']
@@ -533,29 +606,30 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
         edge_mask = cross_mask
 
     # ── Wire invert from checker, mix against combined mask ─────────────────
-    # Fac=0 → tile body (checker), Fac=1 → markers.
-    # Hue shift node sits between invert and mix — shifts marker colour.
-    # Default 180 degrees = fully inverted checker (maximum contrast).
-    # +/-180 from default = lines match checker colour (invisible).
-
+    # Gamma-correct invert: x^0.4545 (linear→sRGB) → DIFFERENCE → x^2.2 (sRGB→linear).
+    # Matches Paint.net invert perceptually — punchy, saturated marks.
     x_mix = 700 + (1600 if show_circle else 0)
 
-    hue_shift_deg = prefs.corner_hue_shift if prefs else 180.0
-    hue_node = new_node('ShaderNodeHueSaturation', x_mix - 200, 0)
-    hue_node.inputs['Saturation'].default_value = 1.0
-    hue_node.inputs['Value'].default_value      = 1.0
-    hue_node.inputs['Fac'].default_value        = 1.0
-    hue_node.inputs['Hue'].default_value        = 0.5 + (hue_shift_deg / 360.0)
+    # Step 1: linearise to sRGB before invert
+    gamma_in = new_node('ShaderNodeGamma', x_mix - 400, 0)
+    gamma_in.inputs['Gamma'].default_value = 0.4545
+    links.new(checker_color_out, gamma_in.inputs['Color'])
+
+    # Step 2: invert in sRGB space
+    links.new(gamma_in.outputs['Color'], invert.inputs['B'])
+
+    # Step 3: re-apply gamma to bring back to linear
+    gamma_out = new_node('ShaderNodeGamma', x_mix - 200, 0)
+    gamma_out.inputs['Gamma'].default_value = 2.2
+    links.new(invert.outputs['Result'], gamma_out.inputs['Color'])
 
     mix = new_node('ShaderNodeMix', x_mix, 100)
     mix.data_type  = 'RGBA'
     mix.blend_type = 'MIX'
     mix.inputs['Factor'].default_value = 0.0
-    links.new(edge_mask.outputs['Value'], mix.inputs['Factor'])
+    links.new(edge_mask.outputs['Value'],  mix.inputs['Factor'])
     links.new(checker_color_out,           mix.inputs['A'])
-    links.new(checker_color_out,           invert.inputs['B'])
-    links.new(invert.outputs['Result'],   hue_node.inputs['Color'])
-    links.new(hue_node.outputs['Color'],  mix.inputs['B'])
+    links.new(gamma_out.outputs['Color'],  mix.inputs['B'])
 
     # ── Output ────────────────────────────────────────────────────────────────
     # Position emission and output to the right of mix, wherever it landed
@@ -619,11 +693,19 @@ def ensure_island_materials():
         mat = bpy.data.materials[ISLAND_MARKER_NAME]
     _build_checker_node_tree(mat, col_a, (0.5, 0.5, 0.5))
 
-    # Hidden sub-materials — invert wall A, use as centre of 5 lightness steps
-    inv_a      = (1.0 - col_a[0], 1.0 - col_a[1], 1.0 - col_a[2])
-    h_i, l_i, s_i = colorsys.rgb_to_hls(*inv_a)
-    _offsets   = [-0.5, -0.25, 0.0, 0.25, 0.5]
-    _step_cols = [colorsys.hls_to_rgb(h_i, max(0.15, min(0.85, l_i + off)), s_i) for off in _offsets]
+    # Hidden sub-materials — Floor_01-05, Ceil_01-05, Wall_01-05
+    def _get_col(prop):
+        if prefs and hasattr(prefs, prop):
+            return tuple(getattr(prefs, prop)[:3])
+        return col_a
+
+    _group_cols = [
+        _get_col('color_floor_a'),    # Floor_01-05
+        _get_col('color_ceiling_a'),  # Ceil_01-05
+        col_a,                        # Wall_01-05
+    ]
+    _offsets = [-0.4, -0.2, 0.0, 0.2, 0.4]
+    swap_ab  = getattr(prefs, 'island_swap_ab', False)
 
     for i, name in enumerate(ISLAND_SUB_NAMES):
         if name not in bpy.data.materials:
@@ -631,8 +713,15 @@ def ensure_island_materials():
             created.append(name)
         else:
             mat = bpy.data.materials[name]
-        col_b = _step_cols[i % len(_step_cols)]
-        _build_checker_node_tree(mat, col_a, col_b)
+        group    = i % 3
+        slot     = i // 3
+        parent_a = _group_cols[group]
+        h, l, s  = colorsys.rgb_to_hls(*parent_a)
+        hue_b    = (h + 0.5) % 1.0
+        off      = _offsets[slot]
+        sub_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
+        a, b     = (sub_b, parent_a) if swap_ab else (parent_a, sub_b)
+        _build_checker_node_tree(mat, a, b, checker_invert=True)
     return created
 
 
@@ -641,7 +730,65 @@ def ensure_chain_materials():
     return ensure_island_materials()
 
 
-def _chain_pref_color(prefs, idx, ab):
+def _derive_colours_from_anchor(prefs):
+    """Populate all colour props on prefs from anchor_hue.
+
+    Derivation (S=1.0, L=0.5 fixed):
+      Wall A    = H
+      Floor A   = H + 120°
+      Ceiling A = H + 240°
+      Trim A    = H + 270°
+      Ignore A  = 25% grey  (hue-independent)
+      Ignore B  = 75% grey  (hue-independent)
+      Island Marker A = Wall A
+      Island Marker B = 25% grey (fixed)
+    B colours for Wall/Floor/Ceiling/Trim derived via global color_b_mode/color_b_notch.
+    """
+    if not prefs:
+        return
+
+    h_base = (prefs.anchor_hue % 360.0) / 360.0
+    mode   = getattr(prefs, 'color_b_mode',  'DARKER')
+    notch  = getattr(prefs, 'color_b_notch', 3)
+
+    def _hue_col(offset_deg):
+        h = (h_base + offset_deg / 360.0) % 1.0
+        r, g, b = colorsys.hls_to_rgb(h, 0.5, 1.0)
+        return (r, g, b, 1.0)
+
+    def _derive_b(col_a_rgb):
+        return (*_resolve_color_b(col_a_rgb, mode, col_a_rgb, notch, notch), 1.0)
+
+    # A colours
+    wall_a    = _hue_col(0.0)
+    floor_a   = _hue_col(120.0)
+    ceiling_a = _hue_col(240.0)
+    trim_a    = _hue_col(270.0)
+
+    prefs.color_wall_a    = wall_a
+    prefs.color_floor_a   = floor_a
+    prefs.color_ceiling_a = ceiling_a
+    prefs.color_trim_a    = trim_a
+    prefs.color_ignore_a  = (0.25, 0.25, 0.25, 1.0)
+    prefs.color_ignore_b  = (0.75, 0.75, 0.75, 1.0)
+    prefs.color_island_b  = (0.25, 0.25, 0.25, 1.0)
+
+    # B colours (Wall/Floor/Ceiling/Trim via global mode)
+    prefs.color_wall_b    = _derive_b(wall_a[:3])
+    prefs.color_floor_b   = _derive_b(floor_a[:3])
+    prefs.color_ceiling_b = _derive_b(ceiling_a[:3])
+    prefs.color_trim_b    = _derive_b(trim_a[:3])
+
+    # Sync legacy per-material B mode props so rebuild still works
+    for slot in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island'):
+        try:
+            # Map new LIGHTER/DARKER to legacy DARKER with appropriate notch
+            legacy_mode = 'DARKER' if mode in ('DARKER', 'LIGHTER') else mode
+            setattr(prefs, f'color_b_mode_{slot}',   legacy_mode)
+            setattr(prefs, f'color_b_darker_{slot}',  notch)
+            setattr(prefs, f'color_b_grey_{slot}',    notch)
+        except Exception:
+            pass
     """Legacy — no longer used for new files."""
     return None
 
@@ -724,15 +871,27 @@ def rebuild_fbxmt_materials():
         _build_checker_node_tree(marker, col_a_island, (0.5, 0.5, 0.5), pattern=pattern_island)
         rebuilt.append(ISLAND_MARKER_NAME)
 
-        # Hidden sub-materials — invert wall A, use as centre of 5 lightness steps
-        inv_a      = (1.0 - col_a_island[0], 1.0 - col_a_island[1], 1.0 - col_a_island[2])
-        h_i, l_i, s_i = colorsys.rgb_to_hls(*inv_a)
-        _offsets   = [-0.5, -0.25, 0.0, 0.25, 0.5]
-        _step_cols = [colorsys.hls_to_rgb(h_i, max(0.15, min(0.85, l_i + off)), s_i) for off in _offsets]
+        # Hidden sub-materials — Floor_01-05, Ceil_01-05, Wall_01-05
+        _group_settings = [
+            _read_mat_settings('floor'),    # group 0: Floor (i%3==0)
+            _read_mat_settings('ceiling'),  # group 1: Ceil  (i%3==1)
+            _read_mat_settings('wall'),     # group 2: Wall  (i%3==2)
+        ]
+        _offsets = [-0.4, -0.2, 0.0, 0.2, 0.4]
+        swap_ab  = getattr(prefs, 'island_swap_ab', False)
         for i, name in enumerate(ISLAND_SUB_NAMES):
-            mat   = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
-            col_b = _step_cols[i % len(_step_cols)]
-            _build_checker_node_tree(mat, col_a_island, col_b, pattern=pattern_island)
+            mat      = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
+            group    = i % 3
+            slot     = i // 3
+            parent_a, _, _ = _group_settings[group]
+            if parent_a is None:
+                parent_a = col_a_island
+            h, l, s  = colorsys.rgb_to_hls(*parent_a)
+            hue_b    = (h + 0.5) % 1.0
+            off      = _offsets[slot]
+            col_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
+            a, b     = (col_b, parent_a) if swap_ab else (parent_a, col_b)
+            _build_checker_node_tree(mat, a, b, pattern=pattern_island, checker_invert=True)
             rebuilt.append(name)
     except Exception:
         pass
@@ -1448,9 +1607,14 @@ class OT_FBXMT_Colour_Islands(Operator):
             if obj.type != 'MESH':
                 continue
 
-            mesh = obj.data
-            bm   = bmesh.new()
-            bm.from_mesh(mesh)
+            mesh      = obj.data
+            in_edit   = (context.mode == 'EDIT_MESH' and obj == context.edit_object)
+
+            if in_edit:
+                bm = bmesh.from_edit_mesh(mesh)
+            else:
+                bm = bmesh.new()
+                bm.from_mesh(mesh)
             bm.faces.ensure_lookup_table()
 
             slot_names = [m.name if m else None for m in mesh.materials]
@@ -1530,16 +1694,53 @@ class OT_FBXMT_Colour_Islands(Operator):
                                 adj[ci].add(cj)
                                 adj[cj].add(ci)
 
-            # ── Step 3: greedy graph colouring — only recolour fresh faces ────
-            colours = list(comp_sub_colour)  # seed with existing colours
+            # ── Step 2b: determine group (Floor/Ceil/Wall) per component from normals ──
+            props      = context.scene.fbxmt_props if hasattr(context.scene, 'fbxmt_props') else None
+            thresh_deg = props.uv_floor_threshold if props else 45.0
+            thresh_dot = math.cos(math.radians(thresh_deg))
+            world_mat  = obj.matrix_world
+            z_axis     = Vector((0.0, 0.0, 1.0))
+
+            # Group index: 0=Floor, 1=Ceil, 2=Wall — matches interleaved ISLAND_SUB_NAMES
+            # ISLAND_SUB_NAMES[i]: group = i % 3, slot within group = i // 3
+            # Group slices (indices into ISLAND_SUB_NAMES):
+            _GROUP_INDICES = {
+                0: list(range(0, 15, 3)),   # Floor: 0,3,6,9,12
+                1: list(range(1, 15, 3)),   # Ceil:  1,4,7,10,13
+                2: list(range(2, 15, 3)),   # Wall:  2,5,8,11,14
+            }
+
+            comp_group = []
+            for ci, comp in enumerate(components):
+                # Average world-space normal of component faces
+                avg_normal = Vector((0.0, 0.0, 0.0))
+                for fi in comp:
+                    avg_normal += world_mat.to_3x3() @ bm.faces[fi].normal
+                if avg_normal.length > 0:
+                    avg_normal.normalize()
+                dot_z = avg_normal.dot(z_axis)
+                if abs(dot_z) >= thresh_dot:
+                    group = 0 if dot_z > 0 else 1   # Floor or Ceiling
+                else:
+                    group = 2                         # Wall
+                comp_group.append(group)
+
+            # ── Step 3: greedy graph colouring per group ──────────────────────
+            # colour = index into ISLAND_SUB_NAMES (not sequential — per-group slice)
+            colours = list(comp_sub_colour)
             for ci in range(n_comp):
                 if not comp_is_new[ci]:
-                    continue  # already coloured — don't touch
-                used   = {colours[cj] for cj in adj[ci] if colours[cj] >= 0}
-                colour = 0
-                while colour in used:
-                    colour += 1
-                colours[ci] = min(colour, ISLAND_SUB_COUNT - 1)
+                    continue
+                group       = comp_group[ci]
+                group_idxs  = _GROUP_INDICES[group]
+                used_global = {colours[cj] for cj in adj[ci] if colours[cj] >= 0}
+                # Pick lowest available index from this group's slice
+                chosen = group_idxs[0]
+                for idx in group_idxs:
+                    if idx not in used_global:
+                        chosen = idx
+                        break
+                colours[ci] = chosen
 
             # ── Step 4: ensure needed sub-material slots exist ────────────────
             needed_indices = {colours[ci] for ci in range(n_comp) if comp_is_new[ci]}
@@ -1567,9 +1768,16 @@ class OT_FBXMT_Colour_Islands(Operator):
                     bm.faces[fi].material_index = slot_idx
                 total_coloured += len(comp)
 
-            bm.to_mesh(mesh)
-            bm.free()
+            if in_edit:
+                bmesh.update_edit_mesh(mesh)
+            else:
+                bm.to_mesh(mesh)
+                bm.free()
             mesh.update()
+
+        # Rebuild so island sub-materials immediately reflect current prefs
+        # (pattern, colours, corner marks) without requiring a manual Rebuild.
+        rebuild_fbxmt_materials()
 
         self.report({'INFO'}, f'Coloured {total_coloured} face(s) across {n_comp} component(s)')
         return {'FINISHED'}

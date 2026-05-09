@@ -15,21 +15,23 @@
 import bpy
 import os
 import hashlib
-import shutil
 import tempfile
 import bmesh
+import numpy as np
+import colorsys
 from mathutils import Vector
 from bpy.types import Operator
 from bpy.props import IntProperty, BoolProperty
 
-from .materials import _get_prefs, ensure_fbxmt_materials, rebuild_fbxmt_materials, ISLAND_B_STEPS
-
-# Surface materials that get the split tile treatment (top=parent, bottom=island steps)
-_SPLIT_TILE_MATS = {'M_FBXMT_Floor', 'M_FBXMT_Ceiling', 'M_FBXMT_Wall'}
+from .materials import _get_prefs, ensure_fbxmt_materials, rebuild_fbxmt_materials
+from .panel import ADDON_ID
 from .uv_unwrap import unwrap_mesh
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
+
+# Surface materials that get the split tile (top=parent, bottom=island steps) in dialog preview
+_SPLIT_TILE_MATS = {'M_FBXMT_Floor', 'M_FBXMT_Ceiling', 'M_FBXMT_Wall'}
 
 # 6 visible materials in display order
 ALL_DISPLAY_MATERIAL_NAMES = [
@@ -47,7 +49,59 @@ BAKE_MATERIAL_NAMES = [n for n in ALL_DISPLAY_MATERIAL_NAMES if n != 'M_FBXMT_Ig
 PREVIEW_SIZE  = 128
 CACHE_SUBDIR  = 'MaterialCache'
 
-# Colour property pairs on FBXMT_GlobalPrefs, indexed by ALL_DISPLAY_MATERIAL_NAMES order
+# 5×7 pixel font for contact sheet labels
+_FONT_5X7 = {
+    'A':['01110','10001','10001','11111','10001','10001','10001'],
+    'B':['11110','10001','10001','11110','10001','10001','11110'],
+    'C':['01110','10001','10000','10000','10000','10001','01110'],
+    'D':['11110','10001','10001','10001','10001','10001','11110'],
+    'E':['11111','10000','10000','11110','10000','10000','11111'],
+    'F':['11111','10000','10000','11110','10000','10000','10000'],
+    'G':['01110','10001','10000','10111','10001','10001','01111'],
+    'H':['10001','10001','10001','11111','10001','10001','10001'],
+    'I':['01110','00100','00100','00100','00100','00100','01110'],
+    'J':['00111','00010','00010','00010','00010','10010','01100'],
+    'K':['10001','10010','10100','11000','10100','10010','10001'],
+    'L':['10000','10000','10000','10000','10000','10000','11111'],
+    'M':['10001','11011','10101','10001','10001','10001','10001'],
+    'N':['10001','11001','10101','10011','10001','10001','10001'],
+    'O':['01110','10001','10001','10001','10001','10001','01110'],
+    'P':['11110','10001','10001','11110','10000','10000','10000'],
+    'Q':['01110','10001','10001','10001','10101','10010','01101'],
+    'R':['11110','10001','10001','11110','10100','10010','10001'],
+    'S':['01111','10000','10000','01110','00001','00001','11110'],
+    'T':['11111','00100','00100','00100','00100','00100','00100'],
+    'U':['10001','10001','10001','10001','10001','10001','01110'],
+    'V':['10001','10001','10001','10001','10001','01010','00100'],
+    'W':['10001','10001','10001','10101','10101','11011','10001'],
+    'X':['10001','10001','01010','00100','01010','10001','10001'],
+    'Y':['10001','10001','01010','00100','00100','00100','00100'],
+    'Z':['11111','00001','00010','00100','01000','10000','11111'],
+    '0':['01110','10001','10011','10101','11001','10001','01110'],
+    '1':['00100','01100','00100','00100','00100','00100','01110'],
+    '2':['01110','10001','00001','00110','01000','10000','11111'],
+    '3':['11110','00001','00001','01110','00001','00001','11110'],
+    '4':['00010','00110','01010','10010','11111','00010','00010'],
+    '5':['11111','10000','10000','11110','00001','00001','11110'],
+    '6':['01110','10000','10000','11110','10001','10001','01110'],
+    '7':['11111','00001','00010','00100','01000','01000','01000'],
+    '8':['01110','10001','10001','01110','10001','10001','01110'],
+    '9':['01110','10001','10001','01111','00001','00001','01110'],
+    '_':['00000','00000','00000','00000','00000','00000','11111'],
+    ' ':['00000','00000','00000','00000','00000','00000','00000'],
+}
+
+
+def _snap_px(frac, size):
+    """Round a tile-fraction up to the nearest power-of-2 pixel count."""
+    px = max(1, frac * size)
+    p2 = 1
+    while p2 < px:
+        p2 <<= 1
+    return p2 / size
+
+
+# ─── Colour property maps ─────────────────────────────────────────────────────
 _MAT_COLOR_PROPS = [
     ('color_floor_a',   'color_floor_b'),
     ('color_ceiling_a', 'color_ceiling_b'),
@@ -639,14 +693,7 @@ def _setup_preview_camera(prev_scene, cam_loc, cam_rot_euler, look_at=None):
 
 def _render_preview(prev_scene, img_name: str, size: int):
     """Render prev_scene to a bpy.data.images entry. Returns the image or None."""
-    prev_scene.render.engine  = 'CYCLES'
-    prev_scene.cycles.samples = 1
-    # Use GPU if user has it configured in Cycles preferences
-    cycles_prefs = bpy.context.preferences.addons.get('cycles')
-    if cycles_prefs and cycles_prefs.preferences.compute_device_type != 'NONE':
-        prev_scene.cycles.device = 'GPU'
-    else:
-        prev_scene.cycles.device = 'CPU'
+    prev_scene.render.engine            = 'BLENDER_EEVEE_NEXT'
     prev_scene.render.resolution_x     = size
     prev_scene.render.resolution_y     = size
     prev_scene.render.resolution_percentage = 100
@@ -817,28 +864,56 @@ class FBXMT_OT_ProjectSetup_Preview(Operator):
 
 # ─── Operator: contact sheet ──────────────────────────────────────────────────
 
+class FBXMT_OT_ProjectSetup_SetContactSheetSize(Operator):
+    """Set the contact sheet render size."""
+    bl_idname  = 'fbxmt.set_contact_sheet_size'
+    bl_label   = 'Set Contact Sheet Size'
+    bl_options = {'REGISTER', 'INTERNAL'}
+
+    size: IntProperty()
+
+    def execute(self, context):
+        context.scene.fbxmt_props.contact_sheet_size = self.size
+        return {'FINISHED'}
+
+
 class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
     bl_idname  = 'fbxmt.project_setup_contact_sheet'
     bl_label   = 'Build Contact Sheet'
     bl_options = {'REGISTER'}
 
-    # Layout: 3 cols × 2 rows for all 6 visible materials
-    COLS      = 3
-    ROWS      = 2
-    CELL_SIZE = PREVIEW_SIZE  # match tile size — avoids bilinear scale artefacts
+    COLS = 3
 
     def execute(self, context):
+        props = context.scene.fbxmt_props
         prefs = context.scene.fbxmt_prefs_global
-        # Collect tile images — use fast renderer for any missing tiles
+        cell  = props.contact_sheet_size
+        full  = props.contact_sheet_full
+
+        # Build material list — standard 6 or full 21
+        if full:
+            mat_names = list(ALL_DISPLAY_MATERIAL_NAMES)
+            # Islands fill column-first: Floor(01-05) col0, Ceil(06-10) col1, Wall(11-15) col2
+            # Row-major order for a 3-col grid means interleaving the 3 groups:
+            # row3: Island_01, Island_06, Island_11
+            # row4: Island_02, Island_07, Island_12  etc.
+            # Names are interleaved: Floor_01, Ceil_01, Wall_01, Floor_02, ...
+            # Extract each column's tiles in row order for correct grid placement
+            from .materials import ISLAND_SUB_NAMES as _ISN
+            floor_islands = [_ISN[i] for i in range(0,  15, 3)]   # indices 0,3,6,9,12
+            ceil_islands  = [_ISN[i] for i in range(1,  15, 3)]   # indices 1,4,7,10,13
+            wall_islands  = [_ISN[i] for i in range(2,  15, 3)]   # indices 2,5,8,11,14
+            for f, c, w in zip(floor_islands, ceil_islands, wall_islands):
+                mat_names.extend([f, c, w])
+        else:
+            mat_names = list(ALL_DISPLAY_MATERIAL_NAMES)
+
+        rows = (len(mat_names) + self.COLS - 1) // self.COLS
+
+        # Render all tiles at contact_sheet_size
         imgs = []
-        for mat_name in ALL_DISPLAY_MATERIAL_NAMES:
-            img = bpy.data.images.get(f'__tile_{mat_name}')
-            if img is None:
-                # Render on the fly using fast renderer — no Cycles needed
-                checker_scale = prefs.checker_scale if prefs else 4
-                img = _render_preview_tile_fast(mat_name, prefs, PREVIEW_SIZE, checker_scale)
-                if img and mat_name in _SPLIT_TILE_MATS:
-                    _composite_island_steps(img, prefs, checker_scale, mat_name)
+        for mat_name in mat_names:
+            img = _render_tile(mat_name, context, size=cell)
             if img:
                 imgs.append((mat_name, img))
             else:
@@ -848,9 +923,7 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
             self.report({'ERROR'}, 'No material images available')
             return {'CANCELLED'}
 
-        cell   = self.CELL_SIZE
-        cols   = self.COLS
-        rows   = self.ROWS
+        cols    = self.COLS
         sheet_w = cell * cols
         sheet_h = cell * rows
 
@@ -860,14 +933,12 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
         sheet = bpy.data.images.new('FBXMT_ContactSheet', width=sheet_w, height=sheet_h, alpha=False)
 
         try:
-            import numpy as np
             sheet_px = np.zeros((sheet_h, sheet_w, 4), dtype=np.float32)
             for idx, (mat_name, img) in enumerate(imgs):
                 col = idx % cols
                 row = idx // cols
-                y0  = (rows - 1 - row) * cell   # Blender pixel origin is bottom-left
+                y0  = (rows - 1 - row) * cell
                 x0  = col * cell
-                # Scale image to cell size if needed
                 if img.size[0] != cell or img.size[1] != cell:
                     img.scale(cell, cell)
                 try:
@@ -876,62 +947,16 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
                 except Exception as e:
                     self.report({'WARNING'}, f'Could not read pixels for {mat_name}: {e}')
             sheet.pixels = sheet_px.ravel().tolist()
-        except ImportError:
-            # Pure Python fallback
-            pixels = [0.0] * (sheet_w * sheet_h * 4)
-            for idx, (mat_name, img) in enumerate(imgs):
-                col = idx % cols
-                row = idx // cols
-                y0  = (rows - 1 - row) * cell
-                x0  = col * cell
-                try:
-                    src = list(img.pixels)
-                except Exception:
-                    continue
-                for py in range(cell):
-                    for px in range(cell):
-                        si = (py * cell + px) * 4
-                        di = ((y0 + py) * sheet_w + x0 + px) * 4
-                        pixels[di:di + 4] = src[si:si + 4]
-            sheet.pixels = pixels
+        except Exception as e:
+            self.report({'WARNING'}, f'Contact sheet pixel assembly failed: {e}')
 
-        # Draw material name labels on each cell using a simple pixel font
+        # Draw material name labels
         try:
             px_data = list(sheet.pixels)
-            _FONT_5X7 = {
-                'A':['01110','10001','10001','11111','10001','10001','10001'],
-                'B':['11110','10001','10001','11110','10001','10001','11110'],
-                'C':['01110','10001','10000','10000','10000','10001','01110'],
-                'D':['11110','10001','10001','10001','10001','10001','11110'],
-                'E':['11111','10000','10000','11110','10000','10000','11111'],
-                'F':['11111','10000','10000','11110','10000','10000','10000'],
-                'G':['01110','10001','10000','10111','10001','10001','01111'],
-                'H':['10001','10001','10001','11111','10001','10001','10001'],
-                'I':['01110','00100','00100','00100','00100','00100','01110'],
-                'J':['00111','00010','00010','00010','00010','10010','01100'],
-                'K':['10001','10010','10100','11000','10100','10010','10001'],
-                'L':['10000','10000','10000','10000','10000','10000','11111'],
-                'M':['10001','11011','10101','10001','10001','10001','10001'],
-                'N':['10001','11001','10101','10011','10001','10001','10001'],
-                'O':['01110','10001','10001','10001','10001','10001','01110'],
-                'P':['11110','10001','10001','11110','10000','10000','10000'],
-                'Q':['01110','10001','10001','10001','10101','10010','01101'],
-                'R':['11110','10001','10001','11110','10100','10010','10001'],
-                'S':['01111','10000','10000','01110','00001','00001','11110'],
-                'T':['11111','00100','00100','00100','00100','00100','00100'],
-                'U':['10001','10001','10001','10001','10001','10001','01110'],
-                'V':['10001','10001','10001','10001','10001','01010','00100'],
-                'W':['10001','10001','10001','10101','10101','11011','10001'],
-                'X':['10001','10001','01010','00100','01010','10001','10001'],
-                'Y':['10001','10001','01010','00100','00100','00100','00100'],
-                'Z':['11111','00001','00010','00100','01000','10000','11111'],
-                '_':['00000','00000','00000','00000','00000','00000','11111'],
-                ' ':['00000','00000','00000','00000','00000','00000','00000'],
-            }
             def _put_char(px_data, ch, cx, cy, img_w, img_h, scale=1):
-                rows = _FONT_5X7.get(ch.upper(), _FONT_5X7[' '])
-                for ry, row in enumerate(rows):
-                    for rx, bit in enumerate(row):
+                rows_f = _FONT_5X7.get(ch.upper(), _FONT_5X7[' '])
+                for ry, row_f in enumerate(rows_f):
+                    for rx, bit in enumerate(row_f):
                         if bit == '1':
                             for sy in range(scale):
                                 for sx in range(scale):
@@ -942,16 +967,24 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
                                         px_data[i:i+3] = [1.0, 1.0, 1.0]
                                         px_data[i+3]   = 1.0
 
+            _COL_LABELS = {0: 'FLOOR', 1: 'CEIL', 2: 'WALL'}
+            _ISLAND_START_IDX = 6  # first island sub-material index in imgs list
+
             for idx, (mat_name, _img) in enumerate(imgs):
                 col  = idx % cols
                 row  = idx // cols
                 y0   = (rows - 1 - row) * cell
                 x0   = col * cell
-                # Short label: strip M_FBXMT_ prefix, replace _ with space
-                label = mat_name.replace('M_FBXMT_', '').replace('_', ' ')[:12]
-                scale = 1
+                # Island sub-material label: FLOOR01-05 / CEIL01-05 / WALL01-05
+                if idx >= _ISLAND_START_IDX:
+                    island_row = row - 1  # 1-based within island section
+                    prefix = _COL_LABELS.get(col, 'ISL')
+                    label  = f'{prefix}{island_row:02d}'
+                else:
+                    label = mat_name.replace('M_FBXMT_', '').replace('_', ' ')[:12]
+                scale = max(1, cell // 128)
                 cx    = x0 + 4
-                cy    = y0 + cell - 4  # near top of cell (Blender Y=0 is bottom)
+                cy    = y0 + cell - 4
                 for ch in label:
                     _put_char(px_data, ch, cx, cy, sheet_w, sheet_h, scale)
                     cx += (5 * scale) + 1
@@ -961,9 +994,9 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
         except Exception as e:
             print(f'[FBXMT] Contact sheet label draw failed: {e}')
 
-        # Save contact sheet to MaterialCache/ alongside the blend file
+        # Save to MaterialCache/
         if bpy.data.filepath:
-            save_dir = os.path.join(os.path.dirname(bpy.data.filepath), CACHE_SUBDIR)
+            save_dir  = os.path.join(os.path.dirname(bpy.data.filepath), CACHE_SUBDIR)
             os.makedirs(save_dir, exist_ok=True)
             save_path = os.path.join(save_dir, 'FBXMT_ContactSheet.png')
             sheet.filepath_raw = save_path
@@ -994,7 +1027,6 @@ _PRESET_PROPS = [
 
 def _get_presets_dir(context):
     """Return the presets directory path, or None if not configured."""
-    from .panel import ADDON_ID
     addon_prefs = context.preferences.addons.get(ADDON_ID)
     if not addon_prefs:
         return None
@@ -1046,9 +1078,11 @@ class OT_FBXMT_Preset_Save(Operator):
     bl_label   = 'Save Preset'
     bl_options = {'REGISTER'}
 
-    name: bpy.props.StringProperty(name="Preset Name", default="My Preset")
+    name:      bpy.props.StringProperty(name="Preset Name", default="My Preset")
+    directory: bpy.props.StringProperty(subtype='DIR_PATH')
 
     def invoke(self, context, event):
+        # Always ask for name first
         return context.window_manager.invoke_props_dialog(self, width=300)
 
     def draw(self, context):
@@ -1056,20 +1090,30 @@ class OT_FBXMT_Preset_Save(Operator):
 
     def execute(self, context):
         import json
-        d = _get_presets_dir(context)
-        if not d:
-            self.report({'ERROR'}, 'No presets folder set in Add-on Preferences')
-            return {'CANCELLED'}
-        os.makedirs(d, exist_ok=True)
         name = self.name.strip()
         if not name:
             self.report({'ERROR'}, 'Please enter a preset name')
             return {'CANCELLED'}
-        # Sanitise filename
-        safe = "".join(c if c.isalnum() or c in ' _-' else '_' for c in name)
+
+        # If directory was set by the file browser, store it in addon prefs
+        if self.directory:
+            addon_prefs = bpy.context.preferences.addons.get(ADDON_ID)
+            if addon_prefs:
+                addon_prefs.preferences.presets_path = self.directory
+            d = self.directory
+        else:
+            d = _get_presets_dir(context)
+
+        if not d:
+            self.report({'WARNING'}, "Oops, you forgot to set a presets folder! Pick one now.")
+            context.window_manager.fileselect_add(self)
+            return {'RUNNING_MODAL'}
+
+        os.makedirs(d, exist_ok=True)
+        safe     = "".join(c if c.isalnum() or c in ' _-' else '_' for c in name)
         filepath = os.path.join(d, safe + '.json')
-        prefs = context.scene.fbxmt_prefs_global
-        data  = _prefs_to_dict(prefs)
+        prefs    = context.scene.fbxmt_prefs_global
+        data     = _prefs_to_dict(prefs)
         data['__name__'] = name
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
@@ -1170,6 +1214,20 @@ class OT_FBXMT_ApplyBToAll(Operator):
         return {'FINISHED'}
 
 
+class FBXMT_OT_ApplyAnchor(Operator):
+    """Derive all material colours from the anchor hue and rebuild."""
+    bl_idname  = 'fbxmt.apply_anchor'
+    bl_label   = 'Apply Anchor'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        prefs = context.scene.fbxmt_prefs_global
+        from .materials import _derive_colours_from_anchor, rebuild_fbxmt_materials
+        _derive_colours_from_anchor(prefs)
+        rebuild_fbxmt_materials()
+        return {'FINISHED'}
+
+
 # ─── Operator: main project setup dialog ─────────────────────────────────────
 
 class FBXMT_OT_ProjectSetup(Operator):
@@ -1208,29 +1266,14 @@ class FBXMT_OT_ProjectSetup(Operator):
             layout.label(text='Scene properties unavailable', icon='ERROR')
             return
 
-        # Derive index from enum
-        try:
-            idx = int(context.scene.fbxmt_preview_mat_enum)
-        except (AttributeError, ValueError):
-            idx = props.fbxmt_selected_mat_index
-        idx = max(0, min(idx, len(ALL_DISPLAY_MATERIAL_NAMES) - 1))
-
-        mat_name       = ALL_DISPLAY_MATERIAL_NAMES[idx]
-        prop_a, prop_b = _MAT_COLOR_PROPS[idx]
-        preview_mode   = getattr(context.scene, 'fbxmt_preview_mode', 'TILE')
-
-        # ── Preview image — full width, tight vertical ───────────────────────
-        tile_img  = bpy.data.images.get(f'__tile_{mat_name}')
-        model_img = bpy.data.images.get('__fbxmt_preview')
-
+        # ── Tile grid — labels replace buttons ────────────────────────────────
         box = layout.box()
-        # Always show contact sheet grid — template_icon for display, select button below
-        for row_names_with_idx in (
-            list(enumerate(ALL_DISPLAY_MATERIAL_NAMES[:3])),
-            list(enumerate(ALL_DISPLAY_MATERIAL_NAMES[3:], start=3)),
+        for row_names in (
+            ALL_DISPLAY_MATERIAL_NAMES[:3],
+            ALL_DISPLAY_MATERIAL_NAMES[3:],
         ):
             tile_row = box.row(align=True)
-            for ti, mn in row_names_with_idx:
+            for mn in row_names:
                 col = tile_row.column()
                 img = bpy.data.images.get(f'__tile_{mn}')
                 if img:
@@ -1240,22 +1283,29 @@ class FBXMT_OT_ProjectSetup(Operator):
                     sub = col.box()
                     sub.scale_y = 3.5
                     sub.label(text='')
-                # Select button — alert (highlighted) if this is the active tile
-                btn = col.column()
-                if ti == idx:
-                    btn.alert = True
-                op = btn.operator('fbxmt.select_tile',
-                    text=_MAT_DISPLAY_NAMES.get(mn, mn),
-                    icon='RESTRICT_SELECT_OFF' if ti != idx else 'CHECKMARK',
-                )
-                op.index = ti
+                # Plain label — no click interaction
+                col.label(text=_MAT_DISPLAY_NAMES.get(mn, mn))
 
         # ── Preview buttons ───────────────────────────────────────────────────
         row = layout.row(align=True)
         row.operator('fbxmt.project_setup_update_tile',   text='Update Tile',   icon='FILE_REFRESH')
         row.operator('fbxmt.project_setup_contact_sheet', text='Contact Sheet', icon='IMAGE_REFERENCE')
+        row.prop(props, 'contact_sheet_full', text='Full', toggle=True)
         if props.fbxmt_preview_stale:
             row.label(text='', icon='ERROR')
+
+        # Contact sheet size — binary steps from 256 to geo_texel_density
+        row = layout.row(align=True)
+        row.label(text='Sheet Size:')
+        sz = 256
+        while sz <= props.geo_texel_density:
+            op = row.operator(
+                'fbxmt.set_contact_sheet_size',
+                text=str(sz),
+                depress=(props.contact_sheet_size == sz),
+            )
+            op.size = sz
+            sz *= 2
 
         layout.separator(factor=0.5)
 
@@ -1264,27 +1314,50 @@ class FBXMT_OT_ProjectSetup(Operator):
         col_left  = split.column()
         col_right = split.column()
 
-        # ── LEFT: Material Settings ───────────────────────────────────────────
+        # ── LEFT: Material Settings — new wave ────────────────────────────────
         col_left.label(text='Material Settings', icon='SHADING_RENDERED')
         col_left.separator(factor=0.5)
 
-        # Per-material colour controls — use same helper as N-panel
-        from .panel import _draw_material_colour_controls, _MAT_DISPLAY_ORDER
-        slot = next((s for s, mn in _MAT_DISPLAY_ORDER if mn == mat_name), None)
-        if slot == 'island':
-            col_left.label(text="Colour A tracks Wall A", icon='INFO')
-            col_left.prop(prefs, 'checker_pattern_island', text="Pattern")
-        elif slot:
-            _draw_material_colour_controls(col_left, prefs, slot)
-            # Always-visible split: apply to this material / apply to all
-            row = col_left.row(align=True)
-            row.operator('fbxmt.rebuild_materials', text='Apply B', icon='FILE_REFRESH')
-            op = row.operator('fbxmt.apply_b_to_all', text='Apply B to All', icon='SHADERFX')
-            op.source_slot = slot
+        # Anchor hue slider
+        col_left.label(text='Anchor Hue:')
+        col_left.prop(prefs, 'anchor_hue', text='', slider=True)
+        col_left.operator('fbxmt.apply_anchor', text='Apply', icon='FILE_REFRESH')
         col_left.separator(factor=0.5)
+
+        # Global B mode
+        col_left.prop(prefs, 'color_b_mode', text='Colour B')
+        if prefs.color_b_mode in ('DARKER', 'LIGHTER', 'GREYSCALE'):
+            col_left.prop(prefs, 'color_b_notch', text='Amount', slider=True)
+        col_left.separator(factor=0.5)
+
+        # Per-material checker patterns — uniform paired rows
+        col_left.label(text='Checker Style:')
+        for (slot_l, label_l), (slot_r, label_r) in (
+            (('wall',    'Wall'),    ('trim',    'Trim')),
+            (('floor',   'Floor'),   ('ignore',  'Ignore')),
+            (('ceiling', 'Ceiling'), ('island',  'Island')),
+        ):
+            row = col_left.row(align=False)
+            # Left pair — fixed 50% of row
+            left = row.split(factor=0.5, align=True)
+            ls = left.split(factor=0.35, align=True)
+            ls.label(text=label_l)
+            ls.prop(prefs, f'checker_pattern_{slot_l}', text='')
+            # Right pair — remaining 50%
+            rs = left.split(factor=0.35, align=True)
+            rs.label(text=label_r)
+            if slot_r == 'island':
+                sub = rs.row(align=True)
+                sub.prop(prefs, f'checker_pattern_{slot_r}', text='')
+                sub.prop(prefs, 'island_swap_ab', text='', icon='ARROW_LEFTRIGHT', toggle=True)
+            else:
+                rs.prop(prefs, f'checker_pattern_{slot_r}', text='')
+        col_left.separator(factor=0.5)
+
+        # Texel density
         col_left.label(text='Texel Density:')
         row = col_left.row(align=True)
-        for val in (512, 1024, 2048, 4096, 8192):
+        for val in (1024, 2048, 4096, 8192):
             op = row.operator(
                 'fbxmt.project_setup_set_density',
                 text    = str(val),
@@ -1292,9 +1365,8 @@ class FBXMT_OT_ProjectSetup(Operator):
             )
             op.density = val
         col_left.separator(factor=0.5)
-        col_left.prop(prefs, 'corner_mark_preset', text='Corner Preset')
-        col_left.separator(factor=0.5)
-        # Checker scale — power-of-2 buttons
+
+        # Checker scale
         col_left.label(text='Checker Scale:')
         row = col_left.row(align=True)
         for val in (1, 2, 4, 8, 16, 32):
@@ -1305,51 +1377,56 @@ class FBXMT_OT_ProjectSetup(Operator):
             )
             op.value = val
         col_left.separator(factor=0.5)
+
+        # Corner marks
         row = col_left.row(align=False)
-        row.prop(prefs, 'show_corner_circle',   text='Circle')
+        row.prop(prefs, 'show_corner_circle', text='Circle', toggle=True)
+        row.prop(prefs, 'show_corner_lines',  text='Lines',  toggle=True)
         row.separator(factor=1.5)
-        row.prop(prefs, 'bake_labels',          text='Labels')
+        row.prop(prefs, 'bake_labels', text='Labels')
 
         # ── RIGHT: Project Settings + Presets ─────────────────────────────────
         col_right.label(text='Project Settings', icon='PROPERTIES')
         col_right.separator(factor=0.5)
-        col_right.label(text='Paths:', icon='FILEBROWSER')
+
+        # Paths box
+        paths_box = col_right.box()
+        paths_box.label(text='Paths:', icon='FILEBROWSER')
+        paths_box.prop(props, 'export_path', text='Export')
+        paths_box.prop(props, 'import_path', text='Import')
+
         col_right.separator(factor=0.5)
-        col_right.prop(props, 'export_path', text='Export')
+
+        # Import box
+        import_box = col_right.box()
+        import_box.label(text='Import:', icon='IMPORT')
+        import_box.prop(props,  'quick_import_type', text='Type')
+        import_box.prop(prefs,  'prep_on_import',    text='Full Prep on Import')
+
         col_right.separator(factor=0.5)
-        col_right.prop(props, 'import_path', text='Import')
-        col_right.separator(factor=0.5)
-        col_right.label(text='Import:', icon='IMPORT')
-        col_right.separator(factor=0.5)
-        col_right.prop(props,  'quick_import_type', text='Type')
-        col_right.separator(factor=0.5)
-        col_right.prop(prefs,  'prep_on_import',      text='Full Prep on Import')
-        col_right.separator(factor=0.5)
-        addon_prefs = bpy.context.preferences.addons.get(__package__)
-        if addon_prefs:
-            col_right.prop(addon_prefs.preferences, 'show_setup_on_new', text='Show Setup on New Project')
+
+        addon_prefs = bpy.context.preferences.addons.get(ADDON_ID)
 
         col_right.separator(factor=1.0)
-        col_right.label(text='Material Presets', icon='PRESET')
-        col_right.separator(factor=0.5)
 
-        # Presets folder path
+        # Material Presets box
+        preset_box_outer = col_right.box()
+        preset_box_outer.label(text='Material Presets', icon='PRESET')
         if addon_prefs:
-            col_right.prop(addon_prefs.preferences, 'presets_path', text='Folder')
-        col_right.separator(factor=0.5)
+            preset_box_outer.prop(addon_prefs.preferences, 'presets_path', text='Folder')
+        preset_box_outer.separator(factor=0.5)
 
-        # Preset list with load + delete per entry
         presets = _list_presets(context)
         if presets:
-            preset_box = col_right.box()
+            preset_list = preset_box_outer.box()
             for name, filepath in presets:
-                row = preset_box.row(align=True)
+                row = preset_list.row(align=True)
                 load_op = row.operator('fbxmt.preset_load',   text=name, icon='IMPORT')
                 load_op.filepath = filepath
                 del_op  = row.operator('fbxmt.preset_delete', text='', icon='X')
                 del_op.filepath  = filepath
         else:
-            col_right.label(text='No presets found', icon='INFO')
+            preset_box_outer.label(text='No presets found', icon='INFO')
 
         col_right.separator(factor=0.5)
         col_right.operator('fbxmt.preset_save', text='Save Current...', icon='FILE_TICK')
@@ -1366,8 +1443,6 @@ def _composite_island_steps(img, prefs, checker_scale, mat_name):
     the inverted B. Colour A squares use the material's own Colour A.
     """
     try:
-        import numpy as np
-        import colorsys
 
         _MAT_A_PROP = {
             'M_FBXMT_Floor':   'color_floor_a',
@@ -1444,7 +1519,6 @@ def _composite_corner_marks(img, prefs, size, checker_scale):
     Called after _composite_island_steps so marks are always last in draw order.
     """
     try:
-        import numpy as np
 
         if prefs:
             preset = getattr(prefs, 'corner_mark_preset', 2)
@@ -1452,22 +1526,32 @@ def _composite_corner_marks(img, prefs, size, checker_scale):
         else:
             preset, show_c = 2, True
 
-        BORDER_L = preset * 0.125
-        BORDER_W = 8.0 / size
+        sq_edge       = 1.0 / checker_scale
+        raw_l         = preset * 0.5 * sq_edge
+        snapped_l     = _snap_px(raw_l, size)
+        BORDER_L_TILE = max(4.0 / size, min(8.0 / size, snapped_l))
+        CIRCLE_R      = (BORDER_L_TILE / sq_edge) * 0.5
+        BORDER_W      = _snap_px(1.0 / 64.0, size)
 
+        # Tile-space grids
         ut = np.tile((np.arange(size) + 0.5) / size, (size, 1))
         vt = np.tile((np.arange(size) + 0.5) / size, (size, 1)).T
 
-        u_edge = (ut < BORDER_W) | (ut > 1.0 - BORDER_W)
-        v_edge = (vt < BORDER_W) | (vt > 1.0 - BORDER_W)
-        u_arm  = (vt < BORDER_L) | (vt > 1.0 - BORDER_L)
-        v_arm  = (ut < BORDER_L) | (ut > 1.0 - BORDER_L)
+        # Checker-square-space grids (for circle only)
+        u  = ut * checker_scale
+        v  = vt * checker_scale
+        fu = u - np.floor(u)
+        fv = v - np.floor(v)
+
+        u_edge = (ut < BORDER_W)       | (ut > 1.0 - BORDER_W)
+        v_edge = (vt < BORDER_W)       | (vt > 1.0 - BORDER_W)
+        u_arm  = (fv < BORDER_L_TILE)  | (fv > 1.0 - BORDER_L_TILE)
+        v_arm  = (fu < BORDER_L_TILE)  | (fu > 1.0 - BORDER_L_TILE)
         cross  = (u_edge & u_arm) | (v_edge & v_arm)
 
         if show_c:
-            CIRCLE_R = BORDER_L * 0.5
-            cu   = np.minimum(ut, 1.0 - ut)
-            cv   = np.minimum(vt, 1.0 - vt)
+            cu   = np.minimum(fu, 1.0 - fu)
+            cv   = np.minimum(fv, 1.0 - fv)
             dist = np.sqrt(cu**2 + cv**2)
             arc  = np.abs(dist - CIRCLE_R) < BORDER_W
             cross = cross | arc
@@ -1480,14 +1564,14 @@ def _composite_corner_marks(img, prefs, size, checker_scale):
         r, g, b = under[:, 0], under[:, 1], under[:, 2]
         cmax    = np.maximum(np.maximum(r, g), b)
         cmin    = np.minimum(np.minimum(r, g), b)
-        sat     = np.where(cmax > 0, (cmax - cmin) / cmax, 0.0)
+        chroma  = cmax - cmin
         lum     = 0.299 * r + 0.587 * g + 0.114 * b
 
         inverted = 1.0 - under
         bw       = np.where(lum[:, np.newaxis] > 0.5,
                             np.zeros_like(under),
                             np.ones_like(under))
-        mark_rgb = np.where(sat[:, np.newaxis] > 0.1, inverted, bw)
+        mark_rgb = np.where(chroma[:, np.newaxis] > 0.05, inverted, bw)
 
         pixels[cross, :3] = mark_rgb
         pixels[cross, 3]  = 1.0
@@ -1497,147 +1581,185 @@ def _composite_corner_marks(img, prefs, size, checker_scale):
         print(f'[FBXMT] Corner mark composite failed: {e}')
 
 
-def _render_preview_tile_fast(mat_name, prefs, size, checker_scale):
-    """Render a preview tile entirely in Python/numpy — no Cycles, no GPU.
+_TILE_SCENE_NAME  = '__fbxmt_tile_scene'
+_TILE_OBJ_NAME   = '__fbxmt_tile_quad'
+_TILE_CAM_NAME   = '__fbxmt_tile_cam'
+_tile_scene_size  = None   # cached render size
+_tile_scene_scale = None   # cached tile_scale
 
-    Evaluates the checker shader analytically:
-    - SQUARE:   standard checker XOR
-    - DIAGONAL: fract(u) + fract(v) < 1.0
-    - DIAMOND:  abs(fract(u)-0.5) + abs(fract(v)-0.5) < 0.5
-    Corner cross markers drawn on top in tile UV space.
-    Returns a bpy.types.Image packed in memory, or None on failure.
+
+def _ensure_tile_scene(size, tile_scale=1.0):
+    """Create (or reuse) the persistent flat-quad tile render scene.
+
+    The quad UVs span 1/tile_scale units so that one UV unit = one texel tile
+    in the material's mapping_checker node. This ensures the checker and reticle
+    render at exactly the right scale regardless of geo_texel_density.
+
+    Returns (scene, obj).
+    """
+    global _tile_scene_size, _tile_scene_scale
+    scene = bpy.data.scenes.get(_TILE_SCENE_NAME)
+    obj   = bpy.data.objects.get(_TILE_OBJ_NAME)
+    if (scene and obj
+            and _tile_scene_size  == size
+            and _tile_scene_scale == tile_scale):
+        return scene, obj
+
+    # Tear down stale scene
+    if scene:
+        for o in list(scene.collection.objects):
+            d = o.data
+            scene.collection.objects.unlink(o)
+            bpy.data.objects.remove(o, do_unlink=True)
+            if d and d.users == 0:
+                if isinstance(d, bpy.types.Mesh):   bpy.data.meshes.remove(d)
+                if isinstance(d, bpy.types.Camera):  bpy.data.cameras.remove(d)
+        bpy.data.scenes.remove(scene, do_unlink=True)
+
+    scene = bpy.data.scenes.new(_TILE_SCENE_NAME)
+
+    # ── Render settings ───────────────────────────────────────────────────────
+    scene.render.engine = 'BLENDER_EEVEE'
+    scene.render.resolution_x               = size
+    scene.render.resolution_y               = size
+    scene.render.resolution_percentage      = 100
+    scene.render.film_transparent           = False
+    scene.render.image_settings.file_format = 'PNG'
+    scene.render.image_settings.color_mode  = 'RGB'
+    if hasattr(scene, 'eevee'):
+        eevee = scene.eevee
+        if hasattr(eevee, 'taa_render_samples'): eevee.taa_render_samples = 1
+        if hasattr(eevee, 'use_bloom'):          eevee.use_bloom = False
+        if hasattr(eevee, 'use_ssr'):            eevee.use_ssr   = False
+    scene.view_settings.view_transform = 'Standard'
+    try:
+        scene.view_settings.look = 'None'
+    except Exception:
+        try:
+            scene.view_settings.look = ''
+        except Exception:
+            pass
+    scene.view_settings.exposure = 0.0
+    scene.view_settings.gamma    = 1.0
+
+    # ── Flat quad — UVs span 1/tile_scale to cover exactly one texel tile ────
+    # mapping_checker in the node tree scales UV by checker_scale (squares/tile)
+    # and mapping_tile scales by tile_scale (geo_texel_density/1024).
+    # By making the quad's UV span 1/tile_scale units, one quad = one texel tile.
+    uv_extent = 1.0 / tile_scale
+
+    me = bpy.data.meshes.new(_TILE_OBJ_NAME)
+    bm = bmesh.new()
+    verts = [
+        bm.verts.new((-0.5,  0.5, 0.0)),
+        bm.verts.new(( 0.5,  0.5, 0.0)),
+        bm.verts.new(( 0.5, -0.5, 0.0)),
+        bm.verts.new((-0.5, -0.5, 0.0)),
+    ]
+    bm.verts.ensure_lookup_table()
+    face = bm.faces.new(verts)
+    uv_layer = bm.loops.layers.uv.new('UVMap')
+    uvs = [
+        (0.0,       uv_extent),
+        (uv_extent, uv_extent),
+        (uv_extent, 0.0),
+        (0.0,       0.0),
+    ]
+    for loop, uv in zip(face.loops, uvs):
+        loop[uv_layer].uv = uv
+    bm.to_mesh(me)
+    bm.free()
+    me.uv_layers.active_index = 0
+
+    obj = bpy.data.objects.new(_TILE_OBJ_NAME, me)
+    scene.collection.objects.link(obj)
+
+    # ── Orthographic camera — frames the quad exactly ─────────────────────────
+    cam_data             = bpy.data.cameras.new(_TILE_CAM_NAME)
+    cam_data.type        = 'ORTHO'
+    cam_data.ortho_scale = 1.0
+    cam_data.clip_start  = 0.01
+    cam_data.clip_end    = 10.0
+    cam_obj              = bpy.data.objects.new(_TILE_CAM_NAME, cam_data)
+    cam_obj.location     = (0.0, 0.0, 1.0)
+    cam_obj.rotation_euler = (0.0, 0.0, 0.0)
+    scene.collection.objects.link(cam_obj)
+    scene.camera = cam_obj
+    scene.world  = None
+
+    _tile_scene_size  = size
+    _tile_scene_scale = tile_scale
+
+    return scene, obj
+
+
+def _render_tile(mat_name, context, size=None, split=False):
+    """Render one preview tile by swapping the material on the persistent quad
+    and running EEVEE. Returns a packed bpy.data.Image or None on failure.
+
+    This is the single source of truth for tile rendering — replaces the old
+    numpy analytical renderer. Output is guaranteed to match the viewport
+    because it uses the same EEVEE + node tree path.
     """
     try:
-        import numpy as np
-        from .materials import (
-            ISLAND_B_STEPS, _resolve_color_b,
-        )
+        mat = bpy.data.materials.get(mat_name)
+        if not mat:
+            return None
 
-        # ── Resolve colours and pattern ──────────────────────────────────────
-        _SLOT_MAP = {
-            'M_FBXMT_Floor':   'floor',
-            'M_FBXMT_Ceiling': 'ceiling',
-            'M_FBXMT_Wall':    'wall',
-            'M_FBXMT_Trim':    'trim',
-            'M_FBXMT_Ignore':  'ignore',
-            'M_FBXMT_Island':  'island',
-        }
-        slot = _SLOT_MAP.get(mat_name)
+        prefs = context.scene.fbxmt_prefs_global
+        try:
+            geo_texel_density = context.scene.fbxmt_props.geo_texel_density
+        except Exception:
+            geo_texel_density = 1024
+        tile_scale  = geo_texel_density / 1024.0
+        render_size = size if size is not None else PREVIEW_SIZE
 
-        if slot and prefs:
-            col_a   = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
-            col_b_v = tuple(getattr(prefs, f'color_{slot}_b', (0.3,)*4)[:3])
-            mode    = getattr(prefs, f'color_b_mode_{slot}', 'MANUAL')
-            darker  = getattr(prefs, f'color_b_darker_{slot}', 4)
-            grey    = getattr(prefs, f'color_b_grey_{slot}',   3)
-            pattern = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
-            col_b   = _resolve_color_b(col_a, mode, col_b_v, darker, grey)
+        scene, obj = _ensure_tile_scene(render_size, tile_scale)
+
+        # Assign material to quad
+        if obj.data.materials:
+            obj.data.materials[0] = mat
         else:
-            col_a, col_b, pattern = (0.5,0.5,0.5), (0.2,0.2,0.2), 'SQUARE'
+            obj.data.materials.append(mat)
 
-        # Island marker — use wall A, mid-grey B
-        if slot == 'island' and prefs:
-            col_a = tuple(prefs.color_wall_a[:3])
-            col_b = (0.5, 0.5, 0.5)
+        # Render — provide full window context for EEVEE
+        tmp_path = os.path.join(tempfile.gettempdir(), f'__fbxmt_tile_{mat_name}.png')
+        scene.render.filepath = tmp_path
+        win = context.window if hasattr(context, 'window') and context.window else bpy.context.window
+        with bpy.context.temp_override(window=win, scene=scene):
+            bpy.ops.render.render(write_still=True, scene=scene.name)
 
-        ca = np.array([*col_a, 1.0], dtype=np.float32)
-        cb = np.array([*col_b, 1.0], dtype=np.float32)
+        if not os.path.exists(tmp_path):
+            print(f'[FBXMT] Tile render produced no output for {mat_name}')
+            return None
 
-        # ── UV grid: each pixel maps to a UV coordinate ───────────────────────
-        # UV space 0..1 = one texel tile = checker_scale squares
-        pixels = np.ones((size, size, 4), dtype=np.float32)
-
-        xs = (np.arange(size) + 0.5) / size  # U per column
-        ys = (np.arange(size) + 0.5) / size  # V per row
-
-        # Scale to checker squares
-        u = xs * checker_scale
-        v = ys * checker_scale
-
-        # Broadcast to 2D grids
-        ug = np.tile(u, (size, 1))           # shape (size, size)
-        vg = np.tile(v, (size, 1)).T         # shape (size, size), rows vary
-
-        fu = ug - np.floor(ug)  # fract(u)
-        fv = vg - np.floor(vg)  # fract(v)
-
-        if pattern == 'SQUARE':
-            is_b = ((np.floor(ug).astype(int) + np.floor(vg).astype(int)) % 2) == 1
-        elif pattern == 'DIAGONAL':
-            is_b = (fu + fv) < 1.0
-        else:  # DIAMOND
-            is_b = (np.abs(fu - 0.5) + np.abs(fv - 0.5)) < 0.5
-
-        # Apply A/B colours
-        pixels[is_b]  = cb
-        pixels[~is_b] = ca
-
-        # ── Corner reticle markers ────────────────────────────────────────────
-        # Reticle sits in TILE space (0→1 across the whole tile).
-        # Quarter-arcs and half-lines at each tile corner assemble into a full
-        # circle+cross at every tile-boundary intersection when the texture tiles.
-        if prefs:
-            preset = getattr(prefs, 'corner_mark_preset', 2)
-            show_c = getattr(prefs, 'show_corner_circle', True)
-        else:
-            preset, show_c = 2, True
-
-        # BORDER_L: arm length as fraction of the whole tile
-        # BORDER_W: line width fixed at 8px equivalent, scales proportionally with size
-        BORDER_L = preset * 0.125
-        BORDER_W = 8.0 / size
-
-        # Tile-space grids — 0→1 across the full tile in each axis
-        ut = np.tile((np.arange(size) + 0.5) / size, (size, 1))        # U
-        vt = np.tile((np.arange(size) + 0.5) / size, (size, 1)).T      # V
-
-        # Cross lines: edge strips along tile boundary, limited to arm length
-        u_edge = (ut < BORDER_W) | (ut > 1.0 - BORDER_W)
-        v_edge = (vt < BORDER_W) | (vt > 1.0 - BORDER_W)
-        u_arm  = (vt < BORDER_L) | (vt > 1.0 - BORDER_L)
-        v_arm  = (ut < BORDER_L) | (ut > 1.0 - BORDER_L)
-        cross  = (u_edge & u_arm) | (v_edge & v_arm)
-
-        if show_c:
-            # Quarter-arc at each tile corner: fold to nearest corner then threshold
-            CIRCLE_R = BORDER_L * 0.5
-            cu   = np.minimum(ut, 1.0 - ut)
-            cv   = np.minimum(vt, 1.0 - vt)
-            dist = np.sqrt(cu**2 + cv**2)
-            arc  = np.abs(dist - CIRCLE_R) < BORDER_W
-            cross = cross | arc
-
-        # Saturation-aware colour: invert chromatic colours, black/white for greys
-        # Threshold 0.1 avoids false negatives from linear colour space conversions
-        under   = pixels[cross, :3]
-        r, g, b = under[:, 0], under[:, 1], under[:, 2]
-        cmax    = np.maximum(np.maximum(r, g), b)
-        cmin    = np.minimum(np.minimum(r, g), b)
-        sat     = np.where(cmax > 0, (cmax - cmin) / cmax, 0.0)  # HSV saturation
-        lum     = 0.299 * r + 0.587 * g + 0.114 * b              # perceived luminance
-
-        inverted = 1.0 - under
-        bw       = np.where(lum[:, np.newaxis] > 0.5,
-                            np.zeros_like(under),   # bright grey → black mark
-                            np.ones_like(under))    # dark grey  → white mark
-        mark_rgb = np.where(sat[:, np.newaxis] > 0.1, inverted, bw)
-
-        pixels[cross, :3] = mark_rgb
-        pixels[cross, 3]  = 1.0
-
-        # ── Build Blender image ───────────────────────────────────────────────
+        # Load into bpy.data.images — keep source file until after pack
         img_name = f'__tile_{mat_name}'
         existing = bpy.data.images.get(img_name)
         if existing:
             bpy.data.images.remove(existing)
-        img = bpy.data.images.new(img_name, width=size, height=size, alpha=False, float_buffer=True)
-        img.pixels.foreach_set(pixels.ravel())
-        img.update()
-        # Don't pack yet — caller may composite island steps before packing
+        img = bpy.data.images.load(tmp_path)
+        img.name = img_name
+
+        # Composite island B steps for split preview only.
+        # Corner marks are rendered directly by the node tree via EEVEE — no numpy composite needed.
+        checker_scale = prefs.checker_scale if prefs else 4
+        if split and mat_name in _SPLIT_TILE_MATS:
+            _composite_island_steps(img, prefs, checker_scale, mat_name)
+
+        # Pack into .blend memory, then delete temp file
+        img.pack()
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
         return img
 
     except Exception as e:
-        print(f'[FBXMT] Fast tile render failed for {mat_name}: {e}')
+        import traceback
+        print(f'[FBXMT] Tile render failed for {mat_name}: {e}')
+        traceback.print_exc()
         return None
 
 
@@ -1659,10 +1781,9 @@ class FBXMT_OT_BakeAllModal(Operator):
 
         ensure_fbxmt_materials()
 
-        self._checker_scale = prefs.checker_scale if prefs else 4
-        self._mat_queue     = list(ALL_DISPLAY_MATERIAL_NAMES)
-        self._total         = len(self._mat_queue)
-        self._done          = 0
+        self._mat_queue = list(ALL_DISPLAY_MATERIAL_NAMES)
+        self._total     = len(self._mat_queue)
+        self._done      = 0
 
         rebuild_fbxmt_materials()
         context.workspace.status_text_set('FBXMT  |  Building preview tiles...')
@@ -1689,16 +1810,9 @@ class FBXMT_OT_BakeAllModal(Operator):
 
         mat = bpy.data.materials.get(mat_name)
         if mat:
-            prefs = context.scene.fbxmt_prefs_global
-            img   = _render_preview_tile_fast(mat_name, prefs, PREVIEW_SIZE, self._checker_scale)
-            if img:
-                # For Wall/Floor/Ceiling: composite island B stepping into bottom half,
-                # then reapply corner marks on top so they are always last in draw order
-                if mat_name in _SPLIT_TILE_MATS:
-                    _composite_island_steps(img, prefs, self._checker_scale, mat_name)
-                    _composite_corner_marks(img, prefs, PREVIEW_SIZE, self._checker_scale)
-                img.pack()
-
+            img = _render_tile(mat_name, context, split=True)
+            if img and context.area:
+                context.area.tag_redraw()
 
         return {'RUNNING_MODAL'}
 
@@ -1712,8 +1826,10 @@ class FBXMT_OT_BakeAllModal(Operator):
         if props:
             props.fbxmt_cache_hash = _compute_cache_hash(scene)
 
-        # Switch preview to sheet view
+        # Switch preview to sheet view and force redraw
         context.scene.fbxmt_preview_mode = 'SHEET'
+        if context.area:
+            context.area.tag_redraw()
 
         self.report({'INFO'}, f'FBXMT preview tiles built — {self._total} materials')
         return {'FINISHED'}
@@ -1729,6 +1845,8 @@ CLASSES = (
     FBXMT_OT_BakeAllModal,
     FBXMT_OT_ProjectSetup_UpdateTile,
     FBXMT_OT_ProjectSetup_SetDensity,
+    FBXMT_OT_ProjectSetup_SetContactSheetSize,
+    FBXMT_OT_ApplyAnchor,
     FBXMT_OT_ProjectSetup_Preview,
     FBXMT_OT_ProjectSetup_ContactSheet,
     OT_FBXMT_Preset_Save,

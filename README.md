@@ -1,6 +1,6 @@
 # FBX Mapper's Toolkit
 
-**Blender 5.1 Extension — UV unwrapping and material management for game engine (UE5 Godot Unity et al) map geometry**
+**Blender 5.1 Extension — UV unwrapping and material management for game engine (UE5, Godot, Unity et al) map geometry**
 
 Inspired by UnrealEd / UT99 surface texturing. Built for mappers who want to work fast and stay accurate.
 
@@ -9,10 +9,12 @@ Inspired by UnrealEd / UT99 surface texturing. Built for mappers who want to wor
 ## What it does
 
 - **UV Unwrap** — wall/floor/ceiling projection by world-space normal, edge-stitched chain strips, MaxRects packer
-- **Material System** — procedural checker materials per surface type (Floor, Ceiling, Wall, Trim, Ignore) with configurable colours, checker scale, corner markers and quarter-circle tile indicators
-- **Island Chains** — user-defined UV island boundary materials with per-chain colour pickers
+- **Material System** — procedural EEVEE checker materials per surface type (Floor, Ceiling, Wall, Trim, Ignore) with a single anchor hue driving all colours, configurable patterns (Square / Diagonal / Diamond / Circle), corner markers and quarter-circle tile indicators
+- **Colour Derivation** — single anchor hue (0–360°) drives all A colours via fixed offsets; global B mode (Darker / Lighter / Greyscale / Inverse) + notch
+- **Island Chains** — single visible Island Marker material; 15 hidden sub-materials auto-assigned by adjacency graph colouring (Floor / Ceiling / Wall groups). Colouring fires on assign and immediately reflects current prefs — no manual Rebuild required
 - **Import Pipeline** — full prep on FBX import: strip foreign materials, clear UVs, auto-assign by normal, unwrap, generate LightmapUVs
-- **Export** — FBX export with LightmapUVs enforcement, optional EMIT bake of all materials to PNG (A1-H8 labelled UV reference sheets), saved to `Textures/` alongside the FBX
+- **Export** — FBX export with LightmapUVs enforcement, optional EEVEE tile render of all materials to PNG (A1–H8 labelled UV reference sheets), saved to `Textures/` alongside the FBX. No Cycles required
+- **Project Setup Dialog** — anchor hue slider, global B mode/notch, per-material pattern pickers, live EEVEE tile previews, contact sheet, preset save/load
 - **Startup Template** — bake your preferences into a startup blend so every new file is ready to go
 
 ---
@@ -20,7 +22,7 @@ Inspired by UnrealEd / UT99 surface texturing. Built for mappers who want to wor
 ## Requirements
 
 - Blender 5.1+
-- Cycles (for material baking on export)
+- EEVEE only — no Cycles dependency
 
 ---
 
@@ -31,7 +33,7 @@ Inspired by UnrealEd / UT99 surface texturing. Built for mappers who want to wor
 3. Select the zip — enable **FBX Mapper's Toolkit**
 4. Open the 3D Viewport, press **N**, select the **FBX Toolkit** tab
 
-> **Note:** Preferences are in the N-panel, not Edit > Preferences. The Add-ons preferences entry will show a redirect message explaining this.
+> **Note:** Preferences are in the N-panel, not Edit → Preferences. The Add-ons preferences entry shows a redirect message explaining this.
 
 ---
 
@@ -39,18 +41,18 @@ Inspired by UnrealEd / UT99 surface texturing. Built for mappers who want to wor
 
 ```
 fbx_mappers_toolkit/
-├── __init__.py          # Registration
+├── __init__.py           # Registration
 ├── blender_manifest.toml
-├── fbx_import.py        # Import operators and full prep pipeline
-├── handlers.py          # Depsgraph handler stub
-├── materials.py         # Material operators, chain system, node tree builder
-├── op.py                # Export operator, UV order enforcement, material baking
-├── panel.py             # All panels and UILists
-├── props.py             # FBXMT_GlobalPrefs and FBXMT_Props PropertyGroups
-├── template.py          # Startup template generator
-├── uv_pack.py           # MaxRects BSSF packer
-├── uv_unwrap.py         # Core unwrap logic, projection, stitching
-└── readme.txt           # Plain text readme shipped with the addon
+├── fbx_import.py         # Import operators and full prep pipeline
+├── handlers.py           # load_post handler — chain material init, template detection
+├── materials.py          # Material operators, island system, node tree builder
+├── op.py                 # Export operator, UV order enforcement, material tile render
+├── panel.py              # All panels and UILists
+├── project_setup.py      # Project Setup dialog, EEVEE tile renderer, preset system
+├── props.py              # FBXMT_GlobalPrefs and FBXMT_Props PropertyGroups
+├── template.py           # Startup template generator
+├── uv_pack.py            # MaxRects BSSF packer
+└── uv_unwrap.py          # Core unwrap logic, projection, stitching
 ```
 
 ---
@@ -59,8 +61,13 @@ fbx_mappers_toolkit/
 
 Preferences live on the Scene as `PointerProperty` groups — not in `AddonPreferences`. This sidesteps Blender 5.x extension package prefix issues and means preferences persist with the blend file and in the startup template.
 
-- `scene.fbxmt_prefs_global` → addon-wide settings (checker appearance, colours, import defaults)
+- `scene.fbxmt_prefs_global` → addon-wide settings (checker appearance, colours, patterns, import defaults)
 - `scene.fbxmt_props` → per-scene settings (export path, texel density, lightmap options)
+
+Two settings that must persist *across* files live in true `AddonPreferences`:
+
+- `show_setup_on_new` — whether the Project Setup dialog fires on template load
+- `presets_path` — shared folder for team preset JSON files
 
 See `props.py` for full documentation.
 
@@ -70,7 +77,7 @@ See `props.py` for full documentation.
 
 See [CHANGELOG.md](CHANGELOG.md) for full history.
 
-Current version: **2.5.6**
+Current version: **2.9.0**
 
 ---
 

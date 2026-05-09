@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "2.7.0"
+__version__ = "2.9.0"
 
 import bpy
 from .op import OT_FBXMT_Export

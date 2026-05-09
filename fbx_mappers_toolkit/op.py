@@ -5,7 +5,7 @@ from bpy.types import Operator
 from .panel import ADDON_ID
 from .materials import LIGHTMAP_CHANNEL_NAME
 from .uv_unwrap import ensure_lightmap_channel, unwrap_mesh
-from .project_setup import cache_is_valid, copy_cache_to_textures
+from .project_setup import cache_is_valid, copy_cache_to_textures, _render_tile
 
 
 class OT_FBXMT_Export(Operator):
@@ -108,10 +108,10 @@ class OT_FBXMT_Export(Operator):
                     mat = slot.material
                     if mat and mat.name not in baked_mats:
                         result = self._bake_material_emit(
-                        mat, src_obj, tex_dir,
-                        label_grid=label_grid,
-                        checker_scale=checker_scale,
-                    )
+                            context, mat, tex_dir,
+                            label_grid=label_grid,
+                            checker_scale=checker_scale,
+                        )
                         baked_mats.add(mat.name)
                         if result:
                             baked += 1
@@ -330,80 +330,32 @@ class OT_FBXMT_Export(Operator):
         img.pixels = pixels
 
     @staticmethod
-    def _bake_material_emit(mat, _obj, tex_dir, size=1024, label_grid=False, checker_scale=4):
-        """Bake the Emit output of mat to a PNG in tex_dir.
+    def _bake_material_emit(context, mat, tex_dir, size=1024, label_grid=False, checker_scale=4):
+        """Render mat to a PNG in tex_dir using the EEVEE tile renderer.
 
-        Creates a temporary 1x1m quad, assigns the material, UV-unwraps it
-        to fill 0-1 UV space, bakes EMIT to a 1024x1024 image, saves PNG,
-        then deletes the quad. Using a dedicated bake object guarantees every
-        pixel of the bake target is covered by a face with the material
-        assigned — avoids the black-bake problem that occurs when the real
-        mesh has no faces assigned to this particular material slot.
-
-        Returns the saved filepath, or None on failure.
+        Delegates to _render_tile() in project_setup — the same path used by
+        the Project Setup dialog and the pre-bake cache. No Cycles, no
+        temporary geometry, no bake nodes. Returns the saved filepath, or
+        None on failure.
         """
-        if not mat.use_nodes:
+        img = _render_tile(mat.name, context, size=size)
+        if img is None:
+            print(f'[FBXMT] Tile render returned no image for {mat.name}')
             return None
 
-        scene = bpy.context.scene
-        prev_engine          = scene.render.engine
-        prev_samples         = scene.cycles.samples
-        scene.render.engine  = 'CYCLES'
-        scene.cycles.samples = max(scene.cycles.samples, 1)
-        cycles_prefs = bpy.context.preferences.addons.get('cycles')
-        if cycles_prefs and cycles_prefs.preferences.compute_device_type != 'NONE':
-            scene.cycles.device = 'GPU'
-        else:
-            scene.cycles.device = 'CPU'
-
-        # Create temporary bake quad
-        bpy.ops.mesh.primitive_plane_add(size=1.0)
-        bake_obj      = bpy.context.active_object
-        bake_obj.name = f"__bake_plane_{mat.name}"
-
-        # Assign material
-        if bake_obj.data.materials:
-            bake_obj.data.materials[0] = mat
-        else:
-            bake_obj.data.materials.append(mat)
-
-        # UV-unwrap to fill 0-1 space
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.uv.unwrap(method='ANGLE_BASED', margin=0.0)
-        bpy.ops.object.mode_set(mode='OBJECT')
-
-        img_name = f"__bake_{mat.name}"
-        img = bpy.data.images.get(img_name)
-        if img:
-            bpy.data.images.remove(img)
-        img = bpy.data.images.new(img_name, width=size, height=size, float_buffer=False)
-        img.colorspace_settings.name = 'sRGB'
-
-        nodes     = mat.node_tree.nodes
-        bake_node = nodes.new('ShaderNodeTexImage')
-        bake_node.image = img
-        nodes.active    = bake_node
-
         try:
-            bpy.ops.object.bake(type='EMIT', use_clear=True)
             if label_grid:
                 OT_FBXMT_Export._draw_grid_labels(img, checker_scale)
             filepath = os.path.join(tex_dir, mat.name + '.png')
             img.filepath_raw = filepath
             img.file_format  = 'PNG'
             img.save()
+            return filepath
         except Exception as e:
-            print(f"[FBXMT] Bake failed for {mat.name}: {type(e).__name__}: {e}")
+            print(f'[FBXMT] Save failed for {mat.name}: {type(e).__name__}: {e}')
             return None
         finally:
-            nodes.remove(bake_node)
             bpy.data.images.remove(img)
-            bpy.data.objects.remove(bake_obj, do_unlink=True)
-            scene.render.engine  = prev_engine
-            scene.cycles.samples = prev_samples
-
-        return filepath
 
     @staticmethod
     def _enforce_uv_order(mesh):

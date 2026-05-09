@@ -31,16 +31,17 @@ from bpy.types import PropertyGroup
 
 
 _COLOR_B_MODE_ITEMS = [
-    ('MANUAL',      'Manual',      'Pick colour B freely'),
-    ('DARKER',      'Lighter/Darker', 'Derive B by adjusting A lightness'),
-    ('GREYSCALE',   'Greyscale',   'B is a fixed grey value'),
-    ('INVERSE',     'Inverse',     'B is the complementary hue of A'),
+    ('DARKER',    'Darker',    'Derive B by darkening A'),
+    ('LIGHTER',   'Lighter',   'Derive B by lightening A'),
+    ('GREYSCALE', 'Greyscale', 'B is a fixed grey value'),
+    ('INVERSE',   'Inverse',   'B is the complementary hue of A'),
 ]
 
 PATTERN_ITEMS = [
     ('SQUARE',   'Square',   'Standard checkerboard squares'),
     ('DIAGONAL', 'Diagonal', 'Each square split diagonally into two triangles'),
     ('DIAMOND',  'Diamond',  'Each square split into four triangles forming diamonds'),
+    ('CIRCLE',   'Circle',   'Circle inscribed in each square'),
 ]
 
 
@@ -81,6 +82,11 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         description="Draw quarter-circle arcs at tile corners (radius = half arm length). Applies on Rebuild.",
         default=True,
     )
+    show_corner_lines: bpy.props.BoolProperty(
+        name="Lines",
+        description="Extend lines along all tile edges (preset 4). Off = short reticle arms (preset 2). Circle always uses preset 2.",
+        default=False,
+    )
 
     # Base material checker colours — A and B for each surface type.
     # Applied on Rebuild. B defaults are 70% darkened versions of A.
@@ -118,143 +124,46 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         default=True,
     )
 
-
-    # Legacy chain colour props removed — island marker system replaces chains.
-
-
-    # ── Per-material pattern and colour-B mode ─────────────────────────────
-    checker_pattern_floor: bpy.props.EnumProperty(
-        name="Pattern",
-        description="Checker pattern for Floor",
-        items=PATTERN_ITEMS,
-        default='SQUARE',
+    # ── New wave — Setup V2 ────────────────────────────────────────────────
+    # Single anchor hue drives all material A colours via fixed derivation.
+    # S=1.0, L=0.5 fixed. B colours derived by one global mode.
+    anchor_hue: bpy.props.FloatProperty(
+        name="Anchor Hue",
+        description="Base hue (0-360°) from which all material colours are derived. "
+                    "Wall=H, Floor=H+120°, Ceiling=H+240°, Trim=H+270°.",
+        default=0.0, min=0.0, max=360.0, step=100, precision=1,
+        subtype='NONE',
     )
-    color_b_mode_floor: bpy.props.EnumProperty(
+    color_b_mode: bpy.props.EnumProperty(
         name="Colour B Mode",
-        description="How Colour B is derived for Floor",
+        description="Global B colour derivation mode — applies to all materials simultaneously",
         items=_COLOR_B_MODE_ITEMS,
-        default='MANUAL',
+        default='DARKER',
     )
-    color_b_darker_floor: bpy.props.IntProperty(
-        name="Lighter/Darker",
-        description="1=darkest … 4=same as A … 7=lightest",
-        default=4, min=1, max=7,
+    color_b_notch: bpy.props.IntProperty(
+        name="B Notch",
+        description="Lightness shift amount: 1=25%  2=50%  3=75%",
+        default=1, min=1, max=3,
     )
-    color_b_grey_floor: bpy.props.IntProperty(
-        name="Grey Level",
-        description="1=black  2=25%%  3=50%%  4=75%%  5=white",
-        default=3, min=1, max=5,
-    )
-    checker_pattern_ceiling: bpy.props.EnumProperty(
-        name="Pattern",
-        description="Checker pattern for Ceiling",
-        items=PATTERN_ITEMS,
-        default='SQUARE',
-    )
-    color_b_mode_ceiling: bpy.props.EnumProperty(
-        name="Colour B Mode",
-        description="How Colour B is derived for Ceiling",
-        items=_COLOR_B_MODE_ITEMS,
-        default='MANUAL',
-    )
-    color_b_darker_ceiling: bpy.props.IntProperty(
-        name="Lighter/Darker",
-        description="1=darkest … 4=same as A … 7=lightest",
-        default=4, min=1, max=7,
-    )
-    color_b_grey_ceiling: bpy.props.IntProperty(
-        name="Grey Level",
-        description="1=black  2=25%%  3=50%%  4=75%%  5=white",
-        default=3, min=1, max=5,
-    )
+
+    # Per-material checker patterns (6 materials + island group)
     checker_pattern_wall: bpy.props.EnumProperty(
-        name="Pattern",
-        description="Checker pattern for Wall",
-        items=PATTERN_ITEMS,
-        default='SQUARE',
-    )
-    color_b_mode_wall: bpy.props.EnumProperty(
-        name="Colour B Mode",
-        description="How Colour B is derived for Wall",
-        items=_COLOR_B_MODE_ITEMS,
-        default='MANUAL',
-    )
-    color_b_darker_wall: bpy.props.IntProperty(
-        name="Lighter/Darker",
-        description="1=darkest … 4=same as A … 7=lightest",
-        default=4, min=1, max=7,
-    )
-    color_b_grey_wall: bpy.props.IntProperty(
-        name="Grey Level",
-        description="1=black  2=25%%  3=50%%  4=75%%  5=white",
-        default=3, min=1, max=5,
-    )
+        name="Wall Pattern", items=PATTERN_ITEMS, default='SQUARE')
+    checker_pattern_floor: bpy.props.EnumProperty(
+        name="Floor Pattern", items=PATTERN_ITEMS, default='SQUARE')
+    checker_pattern_ceiling: bpy.props.EnumProperty(
+        name="Ceiling Pattern", items=PATTERN_ITEMS, default='SQUARE')
     checker_pattern_trim: bpy.props.EnumProperty(
-        name="Pattern",
-        description="Checker pattern for Trim",
-        items=PATTERN_ITEMS,
-        default='SQUARE',
-    )
-    color_b_mode_trim: bpy.props.EnumProperty(
-        name="Colour B Mode",
-        description="How Colour B is derived for Trim",
-        items=_COLOR_B_MODE_ITEMS,
-        default='MANUAL',
-    )
-    color_b_darker_trim: bpy.props.IntProperty(
-        name="Lighter/Darker",
-        description="1=darkest … 4=same as A … 7=lightest",
-        default=4, min=1, max=7,
-    )
-    color_b_grey_trim: bpy.props.IntProperty(
-        name="Grey Level",
-        description="1=black  2=25%%  3=50%%  4=75%%  5=white",
-        default=3, min=1, max=5,
-    )
+        name="Trim Pattern", items=PATTERN_ITEMS, default='SQUARE')
     checker_pattern_ignore: bpy.props.EnumProperty(
-        name="Pattern",
-        description="Checker pattern for Ignore",
-        items=PATTERN_ITEMS,
-        default='SQUARE',
-    )
-    color_b_mode_ignore: bpy.props.EnumProperty(
-        name="Colour B Mode",
-        description="How Colour B is derived for Ignore",
-        items=_COLOR_B_MODE_ITEMS,
-        default='MANUAL',
-    )
-    color_b_darker_ignore: bpy.props.IntProperty(
-        name="Lighter/Darker",
-        description="1=darkest … 4=same as A … 7=lightest",
-        default=4, min=1, max=7,
-    )
-    color_b_grey_ignore: bpy.props.IntProperty(
-        name="Grey Level",
-        description="1=black  2=25%%  3=50%%  4=75%%  5=white",
-        default=3, min=1, max=5,
-    )
-    # ── Island marker ────────────────────────────────────────────────────
+        name="Ignore Pattern", items=PATTERN_ITEMS, default='SQUARE')
     checker_pattern_island: bpy.props.EnumProperty(
-        name="Pattern",
-        description="Checker pattern for Island Marker (applied to all sub-materials)",
-        items=PATTERN_ITEMS,
-        default='SQUARE',
-    )
-    color_b_mode_island: bpy.props.EnumProperty(
-        name="Colour B Mode",
-        description="Colour B mode for the visible Island Marker (sub-material B values are always auto-grey)",
-        items=_COLOR_B_MODE_ITEMS,
-        default='MANUAL',
-    )
-    color_b_darker_island: bpy.props.IntProperty(
-        name="Lighter/Darker",
-        description="1=darkest … 4=same as A … 7=lightest",
-        default=4, min=1, max=7,
-    )
-    color_b_grey_island: bpy.props.IntProperty(
-        name="Grey Level",
-        description="1=black  2=25%%  3=50%%  4=75%%  5=white",
-        default=3, min=1, max=5,
+        name="Island Pattern", description="Pattern for Island Marker and all island sub-materials",
+        items=PATTERN_ITEMS, default='CIRCLE')
+    island_swap_ab: bpy.props.BoolProperty(
+        name="Swap A/B",
+        description="Swap colour A and B for all island sub-materials",
+        default=False,
     )
 
 class FBXMT_Props(PropertyGroup):
@@ -273,6 +182,16 @@ class FBXMT_Props(PropertyGroup):
         name="Texel Density",
         description="Texel density for Geo collection objects (texels/m). 1024tx/m = 1m tile.",
         default=1024, min=512, max=8192,
+    )
+    contact_sheet_size: bpy.props.IntProperty(
+        name="Contact Sheet Size",
+        description="Render resolution per tile for the contact sheet (px)",
+        default=256, min=256, max=8192,
+    )
+    contact_sheet_full: bpy.props.BoolProperty(
+        name="Full Sheet",
+        description="Include all 21 tiles (6 materials + 15 island sub-materials) in a 3×7 grid",
+        default=False,
     )
     apply_scale_options: bpy.props.EnumProperty(
         name="Apply Scale",

@@ -140,23 +140,19 @@ class FBXMT_PT_SceneSetup(Panel):
             exists = col_name in bpy.data.collections
             col_row.label(text=col_name, icon="CHECKMARK" if exists else "X")
 
-        layout.label(text="Texel Density:", icon="LOCKED")
-        btn_row = layout.row(align=True)
-        for val in (512, 1024, 2048, 4096, 8192):
-            op = btn_row.operator("fbxmt.set_texel_density", text=str(val),
-                                  depress=(props.geo_texel_density == val))
-            op.value = val
-        tile_m = props.geo_texel_density / 1024.0
-        layout.label(text=f"Tile: {tile_m:.3g}m  ({props.geo_texel_density}tx/m)", icon="INFO")
-
-
         layout.separator()
         row = layout.row()
-        row.scale_y = 1.3
+        row.scale_y = 1.5
         row.operator("fbxmt.project_setup", text="Project Setup…", icon="SETTINGS")
         layout.separator()
         layout.operator("fbxmt.save_template", text="Save Startup Template", icon="LAYERGROUP_COLOR_02")
-        layout.label(text="Saves current scene as template - restart Blender after", icon="INFO")
+        layout.label(text="Saves current scene as template — restart Blender after", icon="INFO")
+        layout.separator()
+        addon_prefs = bpy.context.preferences.addons.get(ADDON_ID)
+        if addon_prefs:
+            row = layout.row()
+            row.label(text='Show Setup on New Project')
+            row.prop(addon_prefs.preferences, 'show_setup_on_new', text='')
 
 
 # ─── Materials ────────────────────────────────────────────────────────────────
@@ -167,13 +163,12 @@ class FBXMT_PT_Materials(Panel):
     bl_label       = "Materials"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 1
+    bl_order       = 3
 
     def draw(self, context):
         layout = self.layout
         scene  = context.scene
         obj    = context.active_object
-        mesh   = obj.data if obj and obj.type == 'MESH' else None
         in_edit = context.mode == 'EDIT_MESH'
 
         # ── Toolbar ───────────────────────────────────────────────────────────
@@ -186,7 +181,6 @@ class FBXMT_PT_Materials(Panel):
         row.scale_y = 1.2
         row.operator("fbxmt.assign_materials", text="Auto-Assign by Normal", icon="FACE_MAPS")
 
-
         alert_col = layout.column()
         alert_col.alert = True
         alert_col.scale_y = 1.1
@@ -194,14 +188,7 @@ class FBXMT_PT_Materials(Panel):
 
         layout.separator()
 
-        # ── Single unified material list ──────────────────────────────────────
-        # Fixed order: Floor, Ceiling, Wall, Trim, Ignore, Island 01-05.
-        # Sourced from bpy.data.materials — always visible, no object needed.
-        # NOTE: Do NOT write to fbxmt_base_list_index here — mutating props
-        # during draw() re-enters the layout system and causes an access
-        # violation inside blender::ui::template_list. The UIList itself
-        # clamps the active index internally; we only need to guard our own
-        # slot lookup below.
+        # ── Material list ─────────────────────────────────────────────────────
         mat_box = layout.box()
         mat_box.label(text="Materials", icon="MATERIAL")
         mat_box.template_list(
@@ -213,35 +200,7 @@ class FBXMT_PT_Materials(Panel):
 
         layout.separator()
 
-        # ── Per-material colour and pattern controls ───────────────────────────
-        prefs = scene.fbxmt_prefs_global
-        active_idx = scene.fbxmt_base_list_index
-
-        # Resolve the active material name from the global pool, then map to slot.
-        # We cannot use active_idx directly — filter_items reorders the display
-        # but the stored index points into bpy.data.materials, not our canonical order.
-        active_mat  = bpy.data.materials[active_idx] if 0 <= active_idx < len(bpy.data.materials) else None
-        active_slot = _MAT_NAME_TO_SLOT.get(active_mat.name if active_mat else '', None)
-
-        if active_slot:
-            mat_name   = dict(_MAT_DISPLAY_ORDER)[active_slot]
-            colour_box = layout.box()
-            colour_box.label(text=mat_name.replace('M_FBXMT_', '').replace('_', ' '), icon="MATERIAL")
-
-            if active_slot == 'island':
-                # Island marker colour is always derived from Wall A — no picker needed
-                colour_box.label(text="Colour A tracks Wall A", icon='INFO')
-                colour_box.label(text="Pattern set per material:")
-                colour_box.prop(prefs, 'checker_pattern_island', text="")
-            else:
-                _draw_material_colour_controls(colour_box, prefs, active_slot)
-
-            colour_box.separator()
-            row = colour_box.row()
-            row.scale_y = 1.2
-            row.operator("fbxmt.rebuild_materials", text="Update Material", icon="FILE_REFRESH")
-
-        layout.separator()
+        # ── Face assignment ───────────────────────────────────────────────────
         face_box = layout.box()
         face_box.label(
             text="Edit Mode - select faces, then:",
@@ -254,7 +213,7 @@ class FBXMT_PT_Materials(Panel):
 
         layout.separator()
 
-        # Auto-colour island marker faces by adjacency graph
+        # ── Island colouring ──────────────────────────────────────────────────
         island_row = layout.row()
         island_row.scale_y = 1.2
         island_row.operator("fbxmt.colour_islands", text="Auto-Colour Islands", icon="OUTLINER_OB_LATTICE")
@@ -268,7 +227,7 @@ class FBXMT_PT_Import(Panel):
     bl_label       = "Import"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 3
+    bl_order       = 1
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -328,14 +287,25 @@ class FBXMT_PT_UVUnwrap(Panel):
 
         layout.prop(props, "uv_floor_threshold")
 
+        # Disable unwrap if selected object is in Trim or Props collection
+        in_trim_or_props = False
+        if obj:
+            for col in obj.users_collection:
+                if col.name in ('Trim', 'Props'):
+                    in_trim_or_props = True
+                    break
+
         row = layout.row()
         row.scale_y = 1.3
+        row.enabled = not in_trim_or_props
         row.operator(
             "fbxmt.uv_unwrap",
             text="Unwrap Selected Faces" if context.mode == "EDIT_MESH"
                  else "Unwrap Selected Objects",
             icon="UV_DATA",
         )
+        if in_trim_or_props:
+            layout.label(text="Unwrap disabled for Trim/Props", icon="INFO")
 
         row = layout.row()
         row.scale_y = 1.2
