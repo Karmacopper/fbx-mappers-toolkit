@@ -1306,13 +1306,9 @@ class FBXMT_OT_ProjectSetup(Operator):
             op.value = val
         col_left.separator(factor=0.5)
         row = col_left.row(align=False)
-        row.prop(prefs, 'corner_mark_width_px', text='Width')
-        row.separator(factor=1.5)
         row.prop(prefs, 'show_corner_circle',   text='Circle')
         row.separator(factor=1.5)
         row.prop(prefs, 'bake_labels',          text='Labels')
-        col_left.separator(factor=0.5)
-        col_left.prop(prefs, 'corner_hue_shift', text='Line Hue Shift')
 
         # ── RIGHT: Project Settings + Presets ─────────────────────────────────
         col_right.label(text='Project Settings', icon='PROPERTIES')
@@ -1443,6 +1439,64 @@ def _composite_island_steps(img, prefs, checker_scale, mat_name):
         print(f'[FBXMT] Island step composite failed: {e}')
 
 
+def _composite_corner_marks(img, prefs, size, checker_scale):
+    """Reapply corner reticle marks on top of an already-composited image.
+    Called after _composite_island_steps so marks are always last in draw order.
+    """
+    try:
+        import numpy as np
+
+        if prefs:
+            preset = getattr(prefs, 'corner_mark_preset', 2)
+            show_c = getattr(prefs, 'show_corner_circle', True)
+        else:
+            preset, show_c = 2, True
+
+        BORDER_L = preset * 0.125
+        BORDER_W = 8.0 / size
+
+        ut = np.tile((np.arange(size) + 0.5) / size, (size, 1))
+        vt = np.tile((np.arange(size) + 0.5) / size, (size, 1)).T
+
+        u_edge = (ut < BORDER_W) | (ut > 1.0 - BORDER_W)
+        v_edge = (vt < BORDER_W) | (vt > 1.0 - BORDER_W)
+        u_arm  = (vt < BORDER_L) | (vt > 1.0 - BORDER_L)
+        v_arm  = (ut < BORDER_L) | (ut > 1.0 - BORDER_L)
+        cross  = (u_edge & u_arm) | (v_edge & v_arm)
+
+        if show_c:
+            CIRCLE_R = BORDER_L * 0.5
+            cu   = np.minimum(ut, 1.0 - ut)
+            cv   = np.minimum(vt, 1.0 - vt)
+            dist = np.sqrt(cu**2 + cv**2)
+            arc  = np.abs(dist - CIRCLE_R) < BORDER_W
+            cross = cross | arc
+
+        pixels = np.empty(size * size * 4, dtype=np.float32)
+        img.pixels.foreach_get(pixels)
+        pixels = pixels.reshape(size, size, 4)
+
+        under   = pixels[cross, :3]
+        r, g, b = under[:, 0], under[:, 1], under[:, 2]
+        cmax    = np.maximum(np.maximum(r, g), b)
+        cmin    = np.minimum(np.minimum(r, g), b)
+        sat     = np.where(cmax > 0, (cmax - cmin) / cmax, 0.0)
+        lum     = 0.299 * r + 0.587 * g + 0.114 * b
+
+        inverted = 1.0 - under
+        bw       = np.where(lum[:, np.newaxis] > 0.5,
+                            np.zeros_like(under),
+                            np.ones_like(under))
+        mark_rgb = np.where(sat[:, np.newaxis] > 0.1, inverted, bw)
+
+        pixels[cross, :3] = mark_rgb
+        pixels[cross, 3]  = 1.0
+        img.pixels.foreach_set(pixels.ravel())
+        img.update()
+    except Exception as e:
+        print(f'[FBXMT] Corner mark composite failed: {e}')
+
+
 def _render_preview_tile_fast(mat_name, prefs, size, checker_scale):
     """Render a preview tile entirely in Python/numpy — no Cycles, no GPU.
 
@@ -1518,44 +1572,57 @@ def _render_preview_tile_fast(mat_name, prefs, size, checker_scale):
         pixels[is_b]  = cb
         pixels[~is_b] = ca
 
-        # ── Corner cross markers ──────────────────────────────────────────────
+        # ── Corner reticle markers ────────────────────────────────────────────
+        # Reticle sits in TILE space (0→1 across the whole tile).
+        # Quarter-arcs and half-lines at each tile corner assemble into a full
+        # circle+cross at every tile-boundary intersection when the texture tiles.
         if prefs:
-            preset  = getattr(prefs, 'corner_mark_preset', 2)
-            px_w    = getattr(prefs, 'corner_mark_width_px', 4)
-            show_c  = getattr(prefs, 'show_corner_circle', True)
-            hue_sh  = getattr(prefs, 'corner_hue_shift', 180.0)
+            preset = getattr(prefs, 'corner_mark_preset', 2)
+            show_c = getattr(prefs, 'show_corner_circle', True)
         else:
-            preset, px_w, show_c, hue_sh = 2, 4, True, 180.0
+            preset, show_c = 2, True
 
+        # BORDER_L: arm length as fraction of the whole tile
+        # BORDER_W: line width fixed at 8px equivalent, scales proportionally with size
         BORDER_L = preset * 0.125
-        BORDER_W = px_w / 1024.0
+        BORDER_W = 8.0 / size
 
-        # Tile UV space (one period per tile regardless of checker_scale)
-        ut = xs            # U in [0,1) per column
-        vt = ys            # V in [0,1) per row
+        # Tile-space grids — 0→1 across the full tile in each axis
+        ut = np.tile((np.arange(size) + 0.5) / size, (size, 1))        # U
+        vt = np.tile((np.arange(size) + 0.5) / size, (size, 1)).T      # V
 
-        utg = np.tile(ut, (size, 1))
-        vtg = np.tile(vt, (size, 1)).T
-
-        mu = utg % 1.0
-        mv = vtg % 1.0
-
-        u_edge = (mu < BORDER_W) | (mu > 1.0 - BORDER_W)
-        v_edge = (mv < BORDER_W) | (mv > 1.0 - BORDER_W)
-        u_arm  = (mu < BORDER_L) | (mu > 1.0 - BORDER_L)
-        v_arm  = (mv < BORDER_L) | (mv > 1.0 - BORDER_L)
-
-        cross = (u_edge & v_arm) | (v_edge & u_arm)
+        # Cross lines: edge strips along tile boundary, limited to arm length
+        u_edge = (ut < BORDER_W) | (ut > 1.0 - BORDER_W)
+        v_edge = (vt < BORDER_W) | (vt > 1.0 - BORDER_W)
+        u_arm  = (vt < BORDER_L) | (vt > 1.0 - BORDER_L)
+        v_arm  = (ut < BORDER_L) | (ut > 1.0 - BORDER_L)
+        cross  = (u_edge & u_arm) | (v_edge & v_arm)
 
         if show_c:
+            # Quarter-arc at each tile corner: fold to nearest corner then threshold
             CIRCLE_R = BORDER_L * 0.5
-            dist = np.sqrt((mu - 0.0)**2 + (mv - 0.0)**2)
-            arc  = (np.abs(dist - CIRCLE_R) < BORDER_W)
+            cu   = np.minimum(ut, 1.0 - ut)
+            cv   = np.minimum(vt, 1.0 - vt)
+            dist = np.sqrt(cu**2 + cv**2)
+            arc  = np.abs(dist - CIRCLE_R) < BORDER_W
             cross = cross | arc
 
-        # Invert checker colour for cross markers
-        cross_col = 1.0 - pixels[cross, :3]
-        pixels[cross, :3] = cross_col
+        # Saturation-aware colour: invert chromatic colours, black/white for greys
+        # Threshold 0.1 avoids false negatives from linear colour space conversions
+        under   = pixels[cross, :3]
+        r, g, b = under[:, 0], under[:, 1], under[:, 2]
+        cmax    = np.maximum(np.maximum(r, g), b)
+        cmin    = np.minimum(np.minimum(r, g), b)
+        sat     = np.where(cmax > 0, (cmax - cmin) / cmax, 0.0)  # HSV saturation
+        lum     = 0.299 * r + 0.587 * g + 0.114 * b              # perceived luminance
+
+        inverted = 1.0 - under
+        bw       = np.where(lum[:, np.newaxis] > 0.5,
+                            np.zeros_like(under),   # bright grey → black mark
+                            np.ones_like(under))    # dark grey  → white mark
+        mark_rgb = np.where(sat[:, np.newaxis] > 0.1, inverted, bw)
+
+        pixels[cross, :3] = mark_rgb
         pixels[cross, 3]  = 1.0
 
         # ── Build Blender image ───────────────────────────────────────────────
@@ -1625,9 +1692,11 @@ class FBXMT_OT_BakeAllModal(Operator):
             prefs = context.scene.fbxmt_prefs_global
             img   = _render_preview_tile_fast(mat_name, prefs, PREVIEW_SIZE, self._checker_scale)
             if img:
-                # For Wall/Floor/Ceiling: composite island B stepping into bottom half
+                # For Wall/Floor/Ceiling: composite island B stepping into bottom half,
+                # then reapply corner marks on top so they are always last in draw order
                 if mat_name in _SPLIT_TILE_MATS:
                     _composite_island_steps(img, prefs, self._checker_scale, mat_name)
+                    _composite_corner_marks(img, prefs, PREVIEW_SIZE, self._checker_scale)
                 img.pack()
 
 

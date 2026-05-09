@@ -1,4 +1,5 @@
 import bpy
+import os
 import re
 from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
