@@ -100,9 +100,6 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     color_trim_b:    bpy.props.FloatVectorProperty(name="Trim B",    subtype='COLOR', min=0, max=1, default=(0.52, 0.2,  0.52, 1.0), size=4)
     color_ignore_a:  bpy.props.FloatVectorProperty(name="Ignore A",  subtype='COLOR', min=0, max=1, default=(0.25, 0.25, 0.25, 1.0), size=4)
     color_ignore_b:  bpy.props.FloatVectorProperty(name="Ignore B",  subtype='COLOR', min=0, max=1, default=(0.15, 0.15, 0.15, 1.0), size=4)
-    color_island_a:  bpy.props.FloatVectorProperty(name="Island A",  subtype='COLOR', min=0, max=1, default=(0.08, 0.55, 0.90, 1.0), size=4)
-    color_island_b:  bpy.props.FloatVectorProperty(name="Island B",  subtype='COLOR', min=0, max=1, default=(0.50, 0.50, 0.50, 1.0), size=4)
-
     corner_hue_shift: bpy.props.FloatProperty(
         name="Corner Line Hue Shift",
         description=(
@@ -174,6 +171,19 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         default=42,
         min=0,
         max=9999,
+    )
+
+    # ── Settings lock ──────────────────────────────────────────────────────────
+    preset_locked: bpy.props.BoolProperty(
+        name="Lock Settings",
+        description="Lock all material controls to prevent accidental edits. "
+                    "Set automatically on Full preset load, or toggle at will.",
+        default=False,
+    )
+    active_preset_name: bpy.props.StringProperty(
+        name="Active Preset",
+        description="Name of the last Full preset loaded. Cleared when lock is manually released.",
+        default='',
     )
 
 class FBXMT_Props(PropertyGroup):

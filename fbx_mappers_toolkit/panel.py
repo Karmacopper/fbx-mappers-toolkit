@@ -18,8 +18,39 @@ _MAT_DISPLAY_ORDER = [
 _MAT_NAME_TO_SLOT = {mat_name: slot for slot, mat_name in _MAT_DISPLAY_ORDER}
 
 
+def _draw_preset_lock_ticker(layout, prefs):
+    """Draw the lock ticker. Always visible above material controls.
+
+    Locked with preset name: 'Locked: "Brutalist Grey"'
+    Locked manually:         'Settings locked'
+    Unlocked:                'Lock settings'
+    Operator flips preset_locked and clears active_preset_name on unlock.
+    """
+    locked = prefs.preset_locked
+    name   = prefs.active_preset_name.strip()
+    row    = layout.row(align=True)
+    if locked:
+        label = f'Locked: "{name}"' if name else 'Settings locked'
+        icon  = 'LOCKED'
+    else:
+        label = 'Lock settings'
+        icon  = 'UNLOCKED'
+    row.operator(
+        'fbxmt.toggle_preset_lock',
+        text    = label,
+        icon    = icon,
+        depress = locked,
+    )
+
+
 def _draw_material_colour_controls(layout, prefs, slot):
-    """Draw the pattern dropdown, colour B mode dropdown, and conditional B control."""
+    """Draw the pattern dropdown, colour B mode dropdown, and conditional B control.
+
+    All controls are disabled when prefs.preset_locked is True.
+    Caller should draw _draw_preset_lock_ticker above this.
+    """
+    locked = prefs.preset_locked
+
     pattern_prop  = f'checker_pattern_{slot}'
     mode_prop     = f'color_b_mode_{slot}'
     col_a_prop    = f'color_{slot}_a'
@@ -29,11 +60,13 @@ def _draw_material_colour_controls(layout, prefs, slot):
 
     # ── Two dropdowns side by side ────────────────────────────────────────────
     row = layout.row(align=True)
+    row.enabled = not locked
     row.prop(prefs, pattern_prop, text="")
     row.prop(prefs, mode_prop,    text="")
 
     # ── Box: Colour A always, Colour B conditional ────────────────────────────
     box  = layout.box()
+    box.enabled = not locked
     mode = getattr(prefs, mode_prop, 'MANUAL')
 
     # Colour A — always a free picker, full width

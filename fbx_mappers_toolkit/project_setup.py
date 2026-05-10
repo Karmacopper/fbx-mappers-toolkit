@@ -108,7 +108,7 @@ _MAT_COLOR_PROPS = [
     ('color_wall_a',    'color_wall_b'),
     ('color_trim_a',    'color_trim_b'),
     ('color_ignore_a',  'color_ignore_b'),
-    ('color_island_a',  'color_island_b'),
+    # Island excluded — colour derived from wall A at build time, not stored independently
 ]
 
 _MAT_DISPLAY_NAMES = {
@@ -542,7 +542,7 @@ def _compute_cache_hash(scene) -> str:
         str(round(prefs.corner_hue_shift, 2)),
         str(prefs.bake_labels),
     ]
-    # All 20 colour values
+    # All colour values (island covered by wall A/B which drives it)
     for prop_a, prop_b in _MAT_COLOR_PROPS:
         ca = getattr(prefs, prop_a, None)
         cb = getattr(prefs, prop_b, None)
@@ -780,7 +780,7 @@ class FBXMT_OT_ProjectSetup_UpdateTile(Operator):
 class FBXMT_OT_ProjectSetup_SetDensity(Operator):
     bl_idname  = 'fbxmt.project_setup_set_density'
     bl_label   = 'Set Texel Density'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     density: IntProperty()
 
@@ -799,7 +799,7 @@ class FBXMT_OT_ProjectSetup_SetCheckerScale(Operator):
     The N-panel button (fbxmt.set_checker_scale) still rebuilds immediately."""
     bl_idname  = 'fbxmt.project_setup_set_checker_scale'
     bl_label   = 'Set Checker Scale (Dialog)'
-    bl_options = {'REGISTER', 'INTERNAL'}
+    bl_options = {'INTERNAL'}
 
     value: IntProperty(default=4)
 
@@ -817,7 +817,7 @@ class FBXMT_OT_ProjectSetup_SetCheckerScale(Operator):
 class FBXMT_OT_ProjectSetup_Preview(Operator):
     bl_idname  = 'fbxmt.project_setup_preview'
     bl_label   = 'Render Material Preview'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     def execute(self, context):
         props    = context.scene.fbxmt_props
@@ -890,7 +890,7 @@ class FBXMT_OT_ProjectSetup_TilingTest(Operator):
     alignment lines can be verified visually."""
     bl_idname  = 'fbxmt.project_setup_tiling_test'
     bl_label   = 'Tiling Test'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     def execute(self, context):
         import tempfile, os
@@ -988,7 +988,7 @@ class FBXMT_OT_ProjectSetup_SetContactSheetSize(Operator):
     """Set the contact sheet render size."""
     bl_idname  = 'fbxmt.set_contact_sheet_size'
     bl_label   = 'Set Contact Sheet Size'
-    bl_options = {'REGISTER', 'INTERNAL'}
+    bl_options = {'INTERNAL'}
 
     size: IntProperty()
 
@@ -1000,7 +1000,7 @@ class FBXMT_OT_ProjectSetup_SetContactSheetSize(Operator):
 class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
     bl_idname  = 'fbxmt.project_setup_contact_sheet'
     bl_label   = 'Build Contact Sheet'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     COLS = 3
 
@@ -1157,9 +1157,10 @@ _PRESET_DERIVATION_PROPS = [
 ]
 
 # Full colour stack — stored in addition to derivation props in every preset
+# Island colour excluded — always derived from wall A at build time
 _PRESET_COLOUR_PROPS = [
-    *[f'color_{s}_a' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island')],
-    *[f'color_{s}_b' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island')],
+    *[f'color_{s}_a' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore')],
+    *[f'color_{s}_b' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore')],
 ]
 
 # Swatch material order and labels — matches tile grid top-left → bottom-right
@@ -1169,7 +1170,8 @@ _SWATCH_MATS = [
     ('ceiling', 'color_ceiling_a', 'color_ceiling_b', 'Ceiling'),
     ('trim',    'color_trim_a',    'color_trim_b',    'Trim'),
     ('ignore',  'color_ignore_a',  'color_ignore_b',  'Ignore'),
-    ('island',  'color_island_a',  'color_island_b',  'Island'),
+    # Island colour derives from Wall A at build time — show wall colours in swatch
+    ('island',  'color_wall_a',    'color_wall_b',    'Island*'),
 ]
 
 _SWATCH_SQ   = 16   # pixels per colour square
@@ -1349,7 +1351,7 @@ class OT_FBXMT_Preset_Save(Operator):
     """Save current material settings as a named preset (always Full format)."""
     bl_idname  = 'fbxmt.preset_save'
     bl_label   = 'Save Preset'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     name:      bpy.props.StringProperty(name="Preset Name", default="My Preset")
     directory: bpy.props.StringProperty(subtype='DIR_PATH')
@@ -1399,7 +1401,7 @@ class OT_FBXMT_Preset_Load(Operator):
     """Load a material preset — asks Simple (derive from hue) or Full (apply all values)."""
     bl_idname  = 'fbxmt.preset_load'
     bl_label   = 'Load Preset'
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'INTERNAL', 'UNDO'}
 
     filepath: bpy.props.StringProperty()
     load_mode: bpy.props.EnumProperty(
@@ -1462,6 +1464,10 @@ class OT_FBXMT_Preset_Load(Operator):
         rebuild_fbxmt_materials()
         name = data.get('__name__', os.path.basename(self.filepath))
         mode = 'simple' if self.load_mode == 'SIMPLE' else 'full'
+        # Full load — lock controls and record preset name
+        if self.load_mode == 'FULL':
+            prefs.preset_locked      = True
+            prefs.active_preset_name = name
         self.report({'INFO'}, f'Preset loaded ({mode}): {name}')
         return {'FINISHED'}
 
@@ -1470,7 +1476,7 @@ class OT_FBXMT_Preset_Delete(Operator):
     """Delete a material preset file."""
     bl_idname  = 'fbxmt.preset_delete'
     bl_label   = 'Delete Preset'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     filepath: bpy.props.StringProperty()
 
@@ -1541,7 +1547,7 @@ class FBXMT_OT_ApplyAnchor(Operator):
     The 3D viewport rebuild happens only when the Project Setup dialog is closed."""
     bl_idname  = 'fbxmt.apply_anchor'
     bl_label   = 'Apply Anchor'
-    bl_options = {'REGISTER', 'UNDO'}
+    bl_options = {'INTERNAL', 'UNDO'}
 
     def execute(self, context):
         prefs = context.scene.fbxmt_prefs_global
@@ -1559,7 +1565,7 @@ class FBXMT_OT_ApplyAnchor(Operator):
 class FBXMT_OT_ProjectSetup(Operator):
     bl_idname  = 'fbxmt.project_setup'
     bl_label   = 'FBXMT Project Setup'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     def invoke(self, context, event):
         ensure_fbxmt_materials()
@@ -1649,26 +1655,41 @@ class FBXMT_OT_ProjectSetup(Operator):
         col_left.label(text='Material Settings', icon='SHADING_RENDERED')
         col_left.separator(factor=0.5)
 
+        # Lock ticker — always visible, gates everything below
+        from .panel import _draw_preset_lock_ticker
+        _draw_preset_lock_ticker(col_left, prefs)
+        col_left.separator(factor=0.5)
+
+        locked = prefs.preset_locked
+
         # Anchor hue slider
         col_left.label(text='Anchor Hue (0–1):')
-        col_left.prop(prefs, 'anchor_hue', text='', slider=True)
-        col_left.operator('fbxmt.apply_anchor', text='Apply', icon='FILE_REFRESH')
+        anchor_row = col_left.row()
+        anchor_row.enabled = not locked
+        anchor_row.prop(prefs, 'anchor_hue', text='', slider=True)
+        apply_row = col_left.row()
+        apply_row.enabled = not locked
+        apply_row.operator('fbxmt.apply_anchor', text='Apply', icon='FILE_REFRESH')
         col_left.separator(factor=0.5)
 
         # Global B mode
-        col_left.prop(prefs, 'color_b_mode', text='Colour B')
+        b_col = col_left.column()
+        b_col.enabled = not locked
+        b_col.prop(prefs, 'color_b_mode', text='Colour B')
         if prefs.color_b_mode in ('DARKER', 'LIGHTER', 'GREYSCALE'):
-            col_left.prop(prefs, 'color_b_notch', text='Amount', slider=True)
+            b_col.prop(prefs, 'color_b_notch', text='Amount', slider=True)
         col_left.separator(factor=0.5)
 
         # Per-material checker patterns — uniform paired rows
         col_left.label(text='Checker Style:')
+        style_col = col_left.column()
+        style_col.enabled = not locked
         for (slot_l, label_l), (slot_r, label_r) in (
             (('wall',    'Wall'),    ('trim',    'Trim')),
             (('floor',   'Floor'),   ('ignore',  'Ignore')),
             (('ceiling', 'Ceiling'), ('island',  'Island')),
         ):
-            row = col_left.row(align=False)
+            row = style_col.row(align=False)
             # Left pair — fixed 50% of row
             left = row.split(factor=0.5, align=True)
             ls = left.split(factor=0.35, align=True)
@@ -1688,6 +1709,7 @@ class FBXMT_OT_ProjectSetup(Operator):
         # Texel density
         col_left.label(text='Texel Density:')
         row = col_left.row(align=True)
+        row.enabled = not locked
         for val in (1024, 2048, 4096, 8192):
             op = row.operator(
                 'fbxmt.project_setup_set_density',
@@ -1700,6 +1722,7 @@ class FBXMT_OT_ProjectSetup(Operator):
         # Checker scale
         col_left.label(text='Checker Scale:')
         row = col_left.row(align=True)
+        row.enabled = not locked
         for val in (1, 2, 4, 8):
             op = row.operator(
                 'fbxmt.project_setup_set_checker_scale',
@@ -1711,11 +1734,13 @@ class FBXMT_OT_ProjectSetup(Operator):
 
         # Corner marks
         row = col_left.row(align=False)
+        row.enabled = not locked
         row.prop(prefs, 'show_corner_lines',  text='Lines',  toggle=True)
         col_left.separator(factor=0.5)
 
         # Apex line seed
         row = col_left.row(align=True)
+        row.enabled = not locked
         row.label(text='Line Seed:')
         row.prop(prefs, 'apex_line_seed', text='')
 
@@ -2283,7 +2308,7 @@ class FBXMT_OT_BakeAllModal(Operator):
     execute, Update Tile, Rebuild, and template load."""
     bl_idname  = 'fbxmt.bake_all_modal'
     bl_label   = 'FBXMT Build Preview Tiles'
-    bl_options = {'REGISTER'}
+    bl_options = {'INTERNAL'}
 
     skip_rebuild: bpy.props.BoolProperty(default=False, options={'SKIP_SAVE'})
 
@@ -2403,6 +2428,22 @@ class FBXMT_MT_PresetPicker(bpy.types.Menu):
 
 # ─── Registration ─────────────────────────────────────────────────────────────
 
+class FBXMT_OT_TogglePresetLock(Operator):
+    """Lock or unlock all material controls.
+    Locked: anchor hue, colour B mode, patterns, scale and seed controls are all disabled.
+    Set automatically on Full preset load. Toggle at any time to protect or free settings."""
+    bl_idname  = 'fbxmt.toggle_preset_lock'
+    bl_label   = 'Toggle Settings Lock'
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    def execute(self, context):
+        prefs = context.scene.fbxmt_prefs_global
+        prefs.preset_locked = not prefs.preset_locked
+        if not prefs.preset_locked:
+            prefs.active_preset_name = ''
+        return {'FINISHED'}
+
+
 CLASSES = (
     FBXMT_OT_BakeAllModal,
     FBXMT_OT_ProjectSetup_UpdateTile,
@@ -2420,6 +2461,7 @@ CLASSES = (
     OT_FBXMT_ApplyBToAll,
     FBXMT_OT_SelectPreset,
     FBXMT_MT_PresetPicker,
+    FBXMT_OT_TogglePresetLock,
     FBXMT_OT_ProjectSetup,
 )
 

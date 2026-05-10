@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "2.9.0"
+__version__ = "2.9.2"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -48,6 +48,7 @@ from .project_setup import (
     OT_FBXMT_Preset_Delete,
     OT_FBXMT_SelectTile,
     OT_FBXMT_ApplyBToAll,
+    FBXMT_OT_TogglePresetLock,
     register as register_project_setup,
     unregister as unregister_project_setup,
 )

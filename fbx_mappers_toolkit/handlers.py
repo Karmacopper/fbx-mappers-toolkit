@@ -3,12 +3,6 @@ from bpy.app.handlers import persistent
 
 
 @persistent
-def on_depsgraph_update(scene, depsgraph):
-    """Reserved for future use."""
-    pass
-
-
-@persistent
 def on_load_post(filepath):
     """Ensure all chain materials exist on load — runs with a valid scene context.
     Also fires the Project Setup dialog once when opening a fresh FBXMT template.
