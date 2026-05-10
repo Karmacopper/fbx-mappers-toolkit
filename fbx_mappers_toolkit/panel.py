@@ -174,7 +174,6 @@ class FBXMT_PT_Materials(Panel):
         # ── Toolbar ───────────────────────────────────────────────────────────
         row = layout.row(align=True)
         row.scale_y = 1.2
-        row.operator("fbxmt.add_materials",     text="Add",     icon="ADD")
         row.operator("fbxmt.rebuild_materials", text="Rebuild", icon="FILE_REFRESH")
 
         row = layout.row(align=True)
@@ -347,9 +346,6 @@ class FBXMT_PT_Export(Panel):
         layout.prop(props, "ucx_generate")
         row = layout.row()
         row.prop(props, "bake_textures")
-        sub = row.row()
-        sub.enabled = props.bake_textures
-        sub.prop(context.scene.fbxmt_prefs_global, "bake_labels", text="Label Squares")
 
         row = layout.row()
         row.prop(

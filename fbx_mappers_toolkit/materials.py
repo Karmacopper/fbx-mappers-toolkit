@@ -294,7 +294,7 @@ def _build_pattern_nodes(nodes, links, new_node, mapping_checker, pattern):
     return None  # unknown pattern — fall back to square
 
 
-def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE', checker_invert=False):
+def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE', checker_invert=False, no_corner_marks=False):
     """Procedural checkerboard with texel-tile corner cross markers via Emission.
 
     Two independent mapping paths:
@@ -329,7 +329,7 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
     tile_scale = geo_texel_density / 1024.0
 
     # Corner marker constants — all fractions of one texel tile (1.0 in tile UV space).
-    show_circle = prefs.show_corner_circle if prefs else True
+    show_circle = True  # circle always on
     show_lines  = getattr(prefs, 'show_corner_lines', False) if prefs else False
     CIRCLE_PRESET = 2                              # circle always preset 2
     LINE_PRESET   = 4 if show_lines else 2         # lines: extended or short
@@ -407,7 +407,16 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
     else:
         checker_color_out = checker.outputs['Color']
 
-    # ── Colour invert — applied to checker output for cross arms ────────────
+    # ── Corner marks (skipped for preview renders — composited in numpy instead) ──
+    if no_corner_marks:
+        # Wire checker directly to output — no corner marks
+        emission = new_node('ShaderNodeEmission',       400, 100)
+        output   = new_node('ShaderNodeOutputMaterial', 600, 100)
+        links.new(checker_color_out,            emission.inputs['Color'])
+        links.new(emission.outputs['Emission'], output.inputs['Surface'])
+        return
+
+    # Corner marker constants — all fractions of one texel tile (1.0 in tile UV space).
     # 1 - checker per channel via DIFFERENCE blend against white.
     # ShaderNodeInvert/InvertColor removed in Blender 5.1.
     invert = new_node('ShaderNodeMix', -200, 0)
@@ -675,8 +684,8 @@ def _write_chain_colors(mat, color_a, color_b):
 
 def ensure_island_materials():
     """Ensure M_FBXMT_Island marker and all 15 hidden sub-materials exist.
-    Colour A is always taken from color_wall_a — island faces are wall-type
-    surfaces by definition and should read as such.
+    Only creates missing materials — does NOT rebuild existing node trees.
+    Node tree updates happen in rebuild_fbxmt_materials().
     """
     created = []
     prefs   = _get_prefs()
@@ -685,43 +694,39 @@ def ensure_island_materials():
     else:
         col_a = tuple(FBXMT_MATERIALS['M_FBXMT_Wall'][:3])
 
-    # Visible marker — always rebuild to pick up current wall colour
+    # Visible marker — only create if missing
     if ISLAND_MARKER_NAME not in bpy.data.materials:
         mat = bpy.data.materials.new(name=ISLAND_MARKER_NAME)
+        _build_checker_node_tree(mat, col_a, (0.5, 0.5, 0.5))
         created.append(ISLAND_MARKER_NAME)
-    else:
-        mat = bpy.data.materials[ISLAND_MARKER_NAME]
-    _build_checker_node_tree(mat, col_a, (0.5, 0.5, 0.5))
 
-    # Hidden sub-materials — Floor_01-05, Ceil_01-05, Wall_01-05
+    # Hidden sub-materials — only create missing ones
     def _get_col(prop):
         if prefs and hasattr(prefs, prop):
             return tuple(getattr(prefs, prop)[:3])
         return col_a
 
     _group_cols = [
-        _get_col('color_floor_a'),    # Floor_01-05
-        _get_col('color_ceiling_a'),  # Ceil_01-05
-        col_a,                        # Wall_01-05
+        _get_col('color_floor_a'),
+        _get_col('color_ceiling_a'),
+        col_a,
     ]
     _offsets = [-0.4, -0.2, 0.0, 0.2, 0.4]
     swap_ab  = getattr(prefs, 'island_swap_ab', False)
 
     for i, name in enumerate(ISLAND_SUB_NAMES):
         if name not in bpy.data.materials:
-            mat = bpy.data.materials.new(name=name)
+            mat      = bpy.data.materials.new(name=name)
+            group    = i % 3
+            slot     = i // 3
+            parent_a = _group_cols[group]
+            h, l, s  = colorsys.rgb_to_hls(*parent_a)
+            hue_b    = (h + 0.5) % 1.0
+            off      = _offsets[slot]
+            sub_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
+            a, b     = (sub_b, parent_a) if swap_ab else (parent_a, sub_b)
+            _build_checker_node_tree(mat, a, b, checker_invert=True)
             created.append(name)
-        else:
-            mat = bpy.data.materials[name]
-        group    = i % 3
-        slot     = i // 3
-        parent_a = _group_cols[group]
-        h, l, s  = colorsys.rgb_to_hls(*parent_a)
-        hue_b    = (h + 0.5) % 1.0
-        off      = _offsets[slot]
-        sub_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
-        a, b     = (sub_b, parent_a) if swap_ab else (parent_a, sub_b)
-        _build_checker_node_tree(mat, a, b, checker_invert=True)
     return created
 
 
@@ -745,25 +750,26 @@ def _derive_colours_from_anchor(prefs):
     B colours for Wall/Floor/Ceiling/Trim derived via global color_b_mode/color_b_notch.
     """
     if not prefs:
+        print('[FBXMT] _derive_colours_from_anchor: prefs is None — aborting')
         return
 
-    h_base = (prefs.anchor_hue % 360.0) / 360.0
+    h_base = prefs.anchor_hue % 1.0
     mode   = getattr(prefs, 'color_b_mode',  'DARKER')
     notch  = getattr(prefs, 'color_b_notch', 3)
 
-    def _hue_col(offset_deg):
-        h = (h_base + offset_deg / 360.0) % 1.0
+    def _hue_col(offset_norm):
+        h = (h_base + offset_norm) % 1.0
         r, g, b = colorsys.hls_to_rgb(h, 0.5, 1.0)
         return (r, g, b, 1.0)
 
     def _derive_b(col_a_rgb):
         return (*_resolve_color_b(col_a_rgb, mode, col_a_rgb, notch, notch), 1.0)
 
-    # A colours
+    # A colours — offsets as fractions of the colour wheel
     wall_a    = _hue_col(0.0)
-    floor_a   = _hue_col(120.0)
-    ceiling_a = _hue_col(240.0)
-    trim_a    = _hue_col(270.0)
+    floor_a   = _hue_col(120.0 / 360.0)
+    ceiling_a = _hue_col(240.0 / 360.0)
+    trim_a    = _hue_col(270.0 / 360.0)
 
     prefs.color_wall_a    = wall_a
     prefs.color_floor_a   = floor_a
@@ -779,21 +785,12 @@ def _derive_colours_from_anchor(prefs):
     prefs.color_ceiling_b = _derive_b(ceiling_a[:3])
     prefs.color_trim_b    = _derive_b(trim_a[:3])
 
-    # Sync legacy per-material B mode props so rebuild still works
-    for slot in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island'):
-        try:
-            # Map new LIGHTER/DARKER to legacy DARKER with appropriate notch
-            legacy_mode = 'DARKER' if mode in ('DARKER', 'LIGHTER') else mode
-            setattr(prefs, f'color_b_mode_{slot}',   legacy_mode)
-            setattr(prefs, f'color_b_darker_{slot}',  notch)
-            setattr(prefs, f'color_b_grey_{slot}',    notch)
-        except Exception:
-            pass
-    """Legacy — no longer used for new files."""
-    return None
-
 
 def ensure_fbxmt_materials():
+    # Clean up any orphaned preview materials from interrupted bake sessions
+    for mat in list(bpy.data.materials):
+        if mat.name.startswith('__fbxmt_preview_'):
+            bpy.data.materials.remove(mat)
     created = []
     for name, colour in FBXMT_MATERIALS.items():
         if name not in bpy.data.materials:
@@ -808,6 +805,20 @@ def ensure_fbxmt_materials():
 # automatic rebuild on import so it only runs once. Reset to False by any
 # deliberate user-triggered rebuild so the next import refreshes correctly.
 _materials_built = False
+
+
+def _read_mat_settings(slot):
+    """Return (color_a, color_b, pattern) for a named slot from scene prefs."""
+    prefs = _get_prefs()
+    if not prefs:
+        return None, None, 'SQUARE'
+    col_a   = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
+    col_b_v = tuple(getattr(prefs, f'color_{slot}_b', (0.35,)*4)[:3])
+    mode    = getattr(prefs, 'color_b_mode',  'DARKER')
+    notch   = getattr(prefs, 'color_b_notch', 2)
+    pattern = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
+    col_b   = _resolve_color_b(col_a, mode, col_b_v, notch, notch)
+    return col_a, col_b, pattern
 
 
 def rebuild_fbxmt_materials():
@@ -825,19 +836,6 @@ def rebuild_fbxmt_materials():
         'trim':    'M_FBXMT_Trim',
         'ignore':  'M_FBXMT_Ignore',
     }
-    def _read_mat_settings(slot):
-        """Return (color_a, color_b, pattern) for a named slot from prefs."""
-        if not prefs:
-            return None, None, 'SQUARE'
-        col_a   = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
-        col_b_v = tuple(getattr(prefs, f'color_{slot}_b', (0.35,)*4)[:3])
-        mode    = getattr(prefs, f'color_b_mode_{slot}', 'MANUAL')
-        darker  = getattr(prefs, f'color_b_darker_{slot}', 4)
-        grey    = getattr(prefs, f'color_b_grey_{slot}',   3)
-        pattern = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
-        col_b   = _resolve_color_b(col_a, mode, col_b_v, darker, grey)
-        return col_a, col_b, pattern
-
     rebuilt = []
 
     for slot, mat_name in _SLOT_TO_MAT.items():
@@ -893,8 +891,8 @@ def rebuild_fbxmt_materials():
             a, b     = (col_b, parent_a) if swap_ab else (parent_a, col_b)
             _build_checker_node_tree(mat, a, b, pattern=pattern_island, checker_invert=True)
             rebuilt.append(name)
-    except Exception:
-        pass
+    except Exception as e:
+        print(f'[FBXMT] Island rebuild failed: {type(e).__name__}: {e}')
 
     _materials_built = True
     return rebuilt
@@ -1559,7 +1557,16 @@ class OT_FBXMT_Clear_Scene_Materials(Operator):
         mat_count = len(bpy.data.materials)
         for mat in list(bpy.data.materials):
             bpy.data.materials.remove(mat)
-        self.report({'INFO'}, f'Removed {mat_count} material(s) from scene')
+
+        # Purge all FBXMT cached images — tile previews, swatches, preview copies
+        img_prefixes = ('__tile_', '__fbxmt_tile_', '__fbxmt_swatch_', '__fbxmt_preview_')
+        img_count = 0
+        for img in list(bpy.data.images):
+            if any(img.name.startswith(p) for p in img_prefixes):
+                bpy.data.images.remove(img)
+                img_count += 1
+
+        self.report({'INFO'}, f'Removed {mat_count} material(s) and {img_count} cached image(s) from scene')
         return {'FINISHED'}
 
 

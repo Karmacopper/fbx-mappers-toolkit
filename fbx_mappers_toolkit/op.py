@@ -107,6 +107,10 @@ class OT_FBXMT_Export(Operator):
                 for slot in src_obj.material_slots:
                     mat = slot.material
                     if mat and mat.name not in baked_mats:
+                        # Never export the Island Marker material
+                        if mat.name == ISLAND_MARKER_NAME:
+                            baked_mats.add(mat.name)
+                            continue
                         result = self._bake_material_emit(
                             context, mat, tex_dir,
                             label_grid=label_grid,
@@ -154,7 +158,7 @@ class OT_FBXMT_Export(Operator):
                 if _face.material_index not in _island_slot_idxs:
                     continue
                 _world_normal = (_wm.to_3x3() @ _face.normal).normalized()
-                _dot = _world_normal.dot(_Vec(0, 0, 1))
+                _dot = _world_normal.dot(_Vec((0, 0, 1)))
                 if _dot > _threshold and _floor_idx is not None:
                     _face.material_index = _floor_idx
                 elif _dot < -_threshold and _ceil_idx is not None:
@@ -330,27 +334,99 @@ class OT_FBXMT_Export(Operator):
         img.pixels = pixels
 
     @staticmethod
+    @staticmethod
     def _bake_material_emit(context, mat, tex_dir, size=1024, label_grid=False, checker_scale=4):
-        """Render mat to a PNG in tex_dir using the EEVEE tile renderer.
+        """Render mat and save three PNG sets to tex_dir:
+          {name}.png          — standard: checker + corner marks (vanilla)
+          {name}_labelled.png — standard + A1-H8 grid coordinate overlay
+          {name}_lined.png    — standard + apex lines overlay
 
-        Delegates to _render_tile() in project_setup — the same path used by
-        the Project Setup dialog and the pre-bake cache. No Cycles, no
-        temporary geometry, no bake nodes. Returns the saved filepath, or
-        None on failure.
+        Returns the vanilla filepath, or None on failure.
         """
-        img = _render_tile(mat.name, context, size=size)
+        from .project_setup import _composite_apex_lines
+
+        # Render standard tile (corner marks from EEVEE, no apex lines)
+        # Use a no_corner_marks temp material then add marks via numpy
+        # so we have clean pixel data before apex lines
+        from .materials import _read_mat_settings, _build_checker_node_tree
+        slot = None
+        _SLOT_MAP = {
+            'M_FBXMT_Floor':   'floor',
+            'M_FBXMT_Ceiling': 'ceiling',
+            'M_FBXMT_Wall':    'wall',
+            'M_FBXMT_Trim':    'trim',
+            'M_FBXMT_Ignore':  'ignore',
+        }
+        # For island sub-materials determine parent slot
+        if mat.name in _SLOT_MAP:
+            slot = _SLOT_MAP[mat.name]
+        elif 'Floor' in mat.name:
+            slot = 'floor'
+        elif 'Ceil' in mat.name:
+            slot = 'ceiling'
+        elif 'Wall' in mat.name:
+            slot = 'wall'
+
+        # Render standard tile — EEVEE corner marks, no apex lines
+        img = _render_tile(mat.name, context, size=size, no_apex_lines=True)
         if img is None:
             print(f'[FBXMT] Tile render returned no image for {mat.name}')
             return None
 
         try:
-            if label_grid:
-                OT_FBXMT_Export._draw_grid_labels(img, checker_scale)
+            import numpy as np
+
+            # Read standard pixels (checker + corner marks, no apex lines)
+            std_px = np.empty(size * size * 4, dtype=np.float32)
+            img.pixels.foreach_get(std_px)
+
+            # ── 1. Standard (vanilla) ─────────────────────────────────────
             filepath = os.path.join(tex_dir, mat.name + '.png')
             img.filepath_raw = filepath
             img.file_format  = 'PNG'
             img.save()
+
+            # ── 2. Labelled ───────────────────────────────────────────────
+            try:
+                lab_name = f'__fbxmt_export_lab_{mat.name}'
+                lab = bpy.data.images.get(lab_name)
+                if lab: bpy.data.images.remove(lab)
+                lab = bpy.data.images.new(lab_name, width=size, height=size, alpha=False)
+                lab.pixels.foreach_set(std_px.copy())
+                lab.update()
+                OT_FBXMT_Export._draw_grid_labels(lab, checker_scale)
+                lab_path = os.path.join(tex_dir, mat.name + '_labelled.png')
+                lab.filepath_raw = lab_path
+                lab.file_format  = 'PNG'
+                lab.save()
+            except Exception as e:
+                print(f'[FBXMT] Labelled save failed for {mat.name}: {e}')
+            finally:
+                limg = bpy.data.images.get(lab_name)
+                if limg: bpy.data.images.remove(limg)
+
+            # ── 3. Lined (apex lines overlay) ─────────────────────────────
+            try:
+                prefs = context.scene.fbxmt_prefs_global
+                lin_name = f'__fbxmt_export_lin_{mat.name}'
+                lin = bpy.data.images.get(lin_name)
+                if lin: bpy.data.images.remove(lin)
+                lin = bpy.data.images.new(lin_name, width=size, height=size, alpha=False)
+                lin.pixels.foreach_set(std_px.copy())
+                lin.update()
+                _composite_apex_lines(lin, prefs, checker_scale, size)
+                lin_path = os.path.join(tex_dir, mat.name + '_lined.png')
+                lin.filepath_raw = lin_path
+                lin.file_format  = 'PNG'
+                lin.save()
+            except Exception as e:
+                print(f'[FBXMT] Lined save failed for {mat.name}: {e}')
+            finally:
+                limg = bpy.data.images.get(lin_name)
+                if limg: bpy.data.images.remove(limg)
+
             return filepath
+
         except Exception as e:
             print(f'[FBXMT] Save failed for {mat.name}: {type(e).__name__}: {e}')
             return None

@@ -129,9 +129,10 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     # S=1.0, L=0.5 fixed. B colours derived by one global mode.
     anchor_hue: bpy.props.FloatProperty(
         name="Anchor Hue",
-        description="Base hue (0-360°) from which all material colours are derived. "
+        description="Base hue from which all material colours are derived. "
+                    "0=red, 0.333=green, 0.667=blue. "
                     "Wall=H, Floor=H+120°, Ceiling=H+240°, Trim=H+270°.",
-        default=0.0, min=0.0, max=360.0, step=100, precision=1,
+        default=0.0, min=0.0, max=1.0, step=1, precision=3,
         subtype='NONE',
     )
     color_b_mode: bpy.props.EnumProperty(
@@ -164,6 +165,15 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         name="Swap A/B",
         description="Swap colour A and B for all island sub-materials",
         default=False,
+    )
+
+    apex_line_seed: bpy.props.IntProperty(
+        name="Apex Line Seed",
+        description="Random seed controlling the angle assigned to each apex position line. "
+                    "Different seeds produce different line patterns — part of the preset identity.",
+        default=42,
+        min=0,
+        max=9999,
     )
 
 class FBXMT_Props(PropertyGroup):
