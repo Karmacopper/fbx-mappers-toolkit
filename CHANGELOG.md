@@ -4,12 +4,45 @@ All notable changes to FBX Mapper's Toolkit are documented here.
 
 ---
 
-## [2.9.0] — Current
+## [2.9.0] "Material Girl" — Current
 
-- Fix: Material bake on export now uses the EEVEE tile renderer (`_render_tile`) instead of Cycles. No Cycles dependency anywhere in the codebase. `_bake_material_emit` gutted and replaced; temporary bake quad, bake nodes, and all `scene.cycles.*` access removed from `op.py`
-- Fix: `_render_preview` (3D mesh preview scene) switched from `CYCLES` to `BLENDER_EEVEE_NEXT`
-- Fix: Auto-Colour Islands now calls `rebuild_fbxmt_materials()` after assignment — island sub-materials immediately reflect current pattern, colours, and corner mark settings without requiring a manual Rebuild
-- Version strings corrected and unified: `__init__.py`, `blender_manifest.toml` all read `2.9.0`
+### Apex Line Tile-Position Encoding System
+- Feature: All exported `_lined` textures carry a geometric tile-identification system. At every interior checker square apex, two half-lines radiate outward at a unique, deterministic angle encoding the tile position — no text, no numbers, no locale dependency
+- Feature: Angles are seeded from `apex_line_seed` (integer 0–9999, default 42) — changing the seed produces a different pattern while maintaining uniqueness guarantees. Seed is part of material presets
+- Feature: Shared edge apexes produce coplanar lines across tile boundaries — lines are continuous when tiles are tiled
+- Feature: Per-pixel colour invert — each pixel of a line samples the underlying checker colour and inverts it, so lines change colour as they cross A/B square boundaries
+- Feature: Corner apexes excluded (reticle occupies those positions). Edge non-corner apexes draw their inward half only
+
+### Three Export Texture Sets
+- Feature: Every exported material now produces three PNG files: `{name}.png` (standard: checker + corner marks), `{name}_labelled.png` (standard + A1–H8 grid coordinate overlay), `{name}_lined.png` (standard + apex line position encoding)
+- Feature: `_labelled` labels use per-pixel colour invert against the checker beneath — always readable regardless of colour scheme
+- Feature: `M_FBXMT_Island` (marker material) is never exported. All 15 island sub-materials are exported with all three sets
+- Change: `bake_labels` toggle removed from Export panel and Project Setup — labelled PNGs are always generated as a separate set
+
+### Corner Marks
+- Change: Corner circle always shown — `show_corner_circle` toggle removed from Project Setup UI. Prop retained for preset backwards compat
+- Feature: `no_corner_marks` parameter added to `_build_checker_node_tree` — used for preview/temp materials so numpy compositing controls draw order
+
+### Project Setup
+- Feature: **Tiling Test** button (between Contact Sheet and Full) — renders a 3×3 grid with Ignore in the centre cross and Wall in the four corner tiles. Saved to `MaterialCache/`. Used to verify apex line alignment across tile boundaries
+- Feature: **Apex Line Seed** control added to Project Setup dialog
+- Change: Checker scale options reduced to 1, 2, 4, 8 — 16 and 32 removed (apex line system makes text labels unnecessary at any reasonable scale)
+- Change: Split tile bottom half now shows the actual middle island sub-material (`_03`) rendered via EEVEE, replacing the old stale lightness-step approximation
+
+### Preset System
+- Feature: Preset save always writes Full format JSON (`{"format": "full", "derivation": {...}, "colours": {...}}`) plus companion swatch PNG
+- Feature: Preset picker: dropdown + swatch preview + Load/Delete
+- Feature: `apex_line_seed` included in `_PRESET_DERIVATION_PROPS`
+
+### Bug Fixes and Architecture
+- Fix: `_read_mat_settings` promoted to module-level function in `materials.py` — was nested inside `rebuild_fbxmt_materials`, preventing import
+- Fix: `ensure_island_materials` now only creates missing materials — no longer rebuilds existing node trees, preventing viewport colour changes before OK is pressed in Project Setup
+- Fix: `mathutils.Vector((0, 0, 1))` constructor corrected in `op.py` (was `Vector(0, 0, 1)`)
+- Fix: Preview tiles use temp `no_corner_marks` materials so apex lines composite over clean checker pixels, not over pre-baked EEVEE corner marks
+- Fix: Apex lines draw last in the composite pipeline — always on top of checker and corner marks
+- Fix: `Clear Scene` operator now purges all `__tile_*`, `__fbxmt_swatch_*`, and `__fbxmt_preview_*` cached images
+- Fix: `ensure_fbxmt_materials` purges orphaned `__fbxmt_preview_*` materials on call — prevents accumulation across reinstalls without restart
+- Change: `_render_tile` gains `no_apex_lines` parameter for clean vanilla renders
 
 ## [2.8.0]
 
