@@ -16,7 +16,7 @@ from .materials import (
     CHAIN_PREFIX,
     _chain_index,
 )
-from .uv_pack import pack_islands
+from .uv_pack import pack_islands, smart_pack_islands
 
 
 def _build_preview_uv(mesh):
@@ -361,6 +361,53 @@ def ensure_lightmap_channel(mesh, force_regenerate, obj=None):
     return True
 
 
+# ─── UV colour attribute ───────────────────────────────────────────────────────
+
+def _write_uv_colours(mesh):
+    """Write a FBXMT_Colours face-corner colour attribute to mesh.
+
+    Each face gets the colour of its FBXMT material so islands are visually
+    distinct in the UV editor. Uses CORNER domain so it aligns with UV loops.
+
+    To see the result: in the UV editor, open Overlays and set the
+    colour attribute to 'FBXMT_Colours'.
+    """
+    from .materials import FBXMT_MATERIALS, ISLAND_SUB_PREFIX
+
+    ATTR_NAME    = 'FBXMT_Colours'
+    _ISLAND_COL  = (0.2, 0.8, 0.9, 1.0)  # cyan — distinct from all base materials
+    _FALLBACK    = (0.5, 0.5, 0.5, 1.0)
+
+    # Build material index -> colour lookup
+    mat_colours = {}
+    for i, mat in enumerate(mesh.materials):
+        if mat is None:
+            mat_colours[i] = _FALLBACK
+            continue
+        if mat.name in FBXMT_MATERIALS:
+            mat_colours[i] = FBXMT_MATERIALS[mat.name]
+        elif mat.name.startswith(ISLAND_SUB_PREFIX):
+            mat_colours[i] = _ISLAND_COL
+        else:
+            mat_colours[i] = _FALLBACK
+
+    # Remove and recreate attribute so it's always fresh
+    existing = mesh.color_attributes.get(ATTR_NAME)
+    if existing:
+        mesh.color_attributes.remove(existing)
+    attr = mesh.color_attributes.new(name=ATTR_NAME, type='FLOAT_COLOR', domain='CORNER')
+
+    data     = attr.data
+    loop_idx = 0
+    for poly in mesh.polygons:
+        col = mat_colours.get(poly.material_index, _FALLBACK)
+        for _ in poly.loop_indices:
+            data[loop_idx].color = col
+            loop_idx += 1
+
+    mesh.update()
+
+
 # ─── Core unwrap ──────────────────────────────────────────────────────────────
 
 def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
@@ -462,6 +509,7 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
+    _write_uv_colours(mesh)
 
     total_island = sum(len(v) for v in island_faces.values())
     return len(floor_faces) + len(wall_faces) + total_island
@@ -675,4 +723,59 @@ class OT_FBXMT_UV_Preview(Operator):
             context.view_layer.objects.active = list(preview_col.objects)[0]
         bpy.ops.view3d.localview()
 
+        return {'FINISHED'}
+
+
+# ─── Smart Pack Operator ──────────────────────────────────────────────────────
+
+class OT_FBXMT_SmartPack(Operator):
+    """Repack existing UV islands using the 3-pass informed shelf algorithm.
+    Reads current UV coordinates, translates islands only (no scale/rotate/flip).
+    Run after Unwrap to optimise packing toward the most square bounding box.
+    """
+    bl_idname  = 'fbxmt.smart_pack'
+    bl_label   = 'Smart Pack UVs'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return (context.mode == 'OBJECT' and
+                any(obj.type == 'MESH' for obj in context.selected_objects))
+
+    def execute(self, context):
+        mesh_objects = [obj for obj in context.selected_objects if obj.type == 'MESH']
+        if not mesh_objects:
+            self.report({'WARNING'}, 'No mesh objects selected')
+            return {'CANCELLED'}
+
+        total_islands = 0
+        for obj in mesh_objects:
+            mesh = obj.data
+            bm   = bmesh.new()
+            bm.from_mesh(mesh)
+            bm.faces.ensure_lookup_table()
+
+            uv_layer = bm.loops.layers.uv.get('UVMap')
+            if uv_layer is None:
+                bm.free()
+                self.report({'WARNING'}, f'{obj.name}: no UVMap channel found — skipped')
+                continue
+
+            mat_names = [m.name if m else None for m in mesh.materials]
+            result = smart_pack_islands(bm, uv_layer, mat_names)
+
+            if 'error' in result:
+                bm.free()
+                self.report({'WARNING'}, f'{obj.name}: {result["error"]}')
+                continue
+
+            bm.to_mesh(mesh)
+            bm.free()
+            mesh.update()
+            _write_uv_colours(mesh)
+            _build_preview_uv(mesh)
+            total_islands += result['islands']
+
+        if total_islands:
+            self.report({'INFO'}, f'Smart Pack complete — {total_islands} island(s) across {len(mesh_objects)} object(s). Set UV editor overlay colour attribute to FBXMT_Colours to see island colours.')
         return {'FINISHED'}

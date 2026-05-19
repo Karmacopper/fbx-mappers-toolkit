@@ -39,9 +39,9 @@ ISLAND_SUB_NAMES   = [
     name
     for i in range(1, 6)
     for name in (
+        f'M_FBXMT_Island_Wall_{i:02d}',
         f'M_FBXMT_Island_Floor_{i:02d}',
         f'M_FBXMT_Island_Ceil_{i:02d}',
-        f'M_FBXMT_Island_Wall_{i:02d}',
     )
 ]
 # B values for sub-materials: cycle through 5 darkness steps, repeated across 15 slots
@@ -150,28 +150,23 @@ def setup_material_nodes(mat, colour, scale=None, color_b=None, pattern='SQUARE'
 def _resolve_color_b(color_a_rgb, mode, color_b_rgb, darker_idx=1, grey_idx=2):
     """Return the resolved colour B as an RGB tuple.
 
-    mode='DARKER'    — darken A's lightness by notch (1=25%, 2=50%, 3=75%)
-    mode='LIGHTER'   — lighten A's lightness by notch (1=25%, 2=50%, 3=75%)
-    mode='GREYSCALE' — return grey (1=25%, 2=50%, 3=75%)
-    mode='INVERSE'   — rotate A's hue by 180°, keep S and L
+    mode='DARKER'  — darken A's lightness by notch (1=20%, 2=40%)
+    mode='LIGHTER' — lighten A's lightness by notch (1=20%, 2=40%)
+    mode='INVERSE' — rotate A's hue by 180°, keep S and L
     """
-    # Notch → lightness offset: 1=0.25, 2=0.50, 3=0.75
-    _NOTCH_OFFSETS = [0.25, 0.50, 0.75]
+    # Notch → lightness offset: 1=0.20, 2=0.40
+    _NOTCH_OFFSETS = [0.20, 0.40]
 
     r, g, b = color_a_rgb[0], color_a_rgb[1], color_a_rgb[2]
 
     if mode in ('DARKER', 'LIGHTER'):
         h, l, s = colorsys.rgb_to_hls(r, g, b)
-        offset  = _NOTCH_OFFSETS[max(0, min(2, darker_idx - 1))]
+        offset  = _NOTCH_OFFSETS[max(0, min(1, darker_idx - 1))]
         if mode == 'DARKER':
             new_l = max(0.0, l - offset)
         else:
             new_l = min(1.0, l + offset)
         return colorsys.hls_to_rgb(h, new_l, s)
-
-    if mode == 'GREYSCALE':
-        v = _NOTCH_OFFSETS[max(0, min(2, grey_idx - 1))]
-        return (v, v, v)
 
     if mode == 'INVERSE':
         h, l, s = colorsys.rgb_to_hls(r, g, b)
@@ -286,7 +281,7 @@ def _build_pattern_nodes(nodes, links, new_node, mapping_checker, pattern):
         links.new(add.outputs['Value'], sqrt.inputs[0])
 
         lt = new_node('ShaderNodeMath', 620, 410)
-        lt.operation = 'LESS_THAN'
+        lt.operation = 'GREATER_THAN'  # circles = colour A (inside), background = colour B (outside)
         lt.inputs[1].default_value = EQUAL_AREA_R
         links.new(sqrt.outputs['Value'], lt.inputs[0])
         return lt.outputs['Value']
@@ -294,7 +289,7 @@ def _build_pattern_nodes(nodes, links, new_node, mapping_checker, pattern):
     return None  # unknown pattern — fall back to square
 
 
-def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE', checker_invert=False, no_corner_marks=False):
+def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern='SQUARE', checker_invert=False, no_corner_marks=False, geo_texel_density=None):
     """Procedural checkerboard with texel-tile corner cross markers via Emission.
 
     Two independent mapping paths:
@@ -310,9 +305,12 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
        from the 4 surrounding tiles, forming a + cross.
 
     In mapping_tile space: 1.0 UV unit = 1 texel tile (by construction).
-    Modulo 1.0 gives position within one tile [0, 1).
     BORDER_W = px/1024 (arm width as fraction of tile, tile always = 1024px).
     BORDER_L = corner_mark_length/100 (arm extent as fraction of tile).
+
+    geo_texel_density: pass explicitly when bpy.context.scene may not be the
+    user scene (e.g. during modal renders). Falls back to bpy.context.scene
+    then 1024 if not supplied.
     """
     prefs = _get_prefs()
 
@@ -321,12 +319,12 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
         scale = float(squares_per_tile)
 
     # Texel tile scale: geo_texel_density/1024 maps 1 UV unit to 1 texel tile.
-    # Falls back to 1024tx/m = 1m tile if scene prefs unavailable.
-    try:
-        geo_texel_density = bpy.context.scene.fbxmt_props.geo_texel_density
-    except Exception:
-        geo_texel_density = 1024.0
-    tile_scale = geo_texel_density / 1024.0
+    if geo_texel_density is None:
+        try:
+            geo_texel_density = bpy.context.scene.fbxmt_props.geo_texel_density
+        except Exception:
+            geo_texel_density = 1024.0
+    tile_scale = float(geo_texel_density) / 1024.0
 
     # Corner marker constants — all fractions of one texel tile (1.0 in tile UV space).
     show_circle = True  # circle always on
@@ -374,9 +372,12 @@ def _build_checker_node_tree(mat, color_a_rgb, color_b_rgb, scale=None, pattern=
 
     # For SQUARE, use the checker Fac directly.
     # For DIAGONAL/DIAMOND/CIRCLE, mix A/B by pattern_factor.
+    # CIRCLE always forces XOR — circles must alternate with checker squares
+    # to produce the checkers-board-with-pieces look.
     # checker_invert=True: XOR pattern with checker phase — alternating squares invert.
+    force_xor = (pattern == 'CIRCLE')
     if pattern_factor is not None:
-        if checker_invert:
+        if checker_invert or force_xor:
             # XOR: add pattern_factor + checker.Fac, modulo 2, then > 0.5
             xor_add = new_node('ShaderNodeMath', -200, 350)
             xor_add.operation = 'ADD'
@@ -712,7 +713,6 @@ def ensure_island_materials():
         col_a,
     ]
     _offsets = [-0.4, -0.2, 0.0, 0.2, 0.4]
-    swap_ab  = getattr(prefs, 'island_swap_ab', False)
 
     for i, name in enumerate(ISLAND_SUB_NAMES):
         if name not in bpy.data.materials:
@@ -724,8 +724,7 @@ def ensure_island_materials():
             hue_b    = (h + 0.5) % 1.0
             off      = _offsets[slot]
             sub_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
-            a, b     = (sub_b, parent_a) if swap_ab else (parent_a, sub_b)
-            _build_checker_node_tree(mat, a, b, checker_invert=True)
+            _build_checker_node_tree(mat, parent_a, sub_b, checker_invert=True)
             created.append(name)
     return created
 
@@ -736,30 +735,32 @@ def ensure_chain_materials():
 
 
 def _derive_colours_from_anchor(prefs):
-    """Populate all colour props on prefs from anchor_hue.
+    """Populate all colour props on prefs from anchor_hue, anchor_saturation, anchor_value.
 
-    Derivation (S=1.0, L=0.5 fixed):
-      Wall A    = H
-      Floor A   = H + 120°
-      Ceiling A = H + 240°
-      Trim A    = H + 270°
+    Derivation:
+      Wall A    = HSV(H,        S, V)
+      Floor A   = HSV(H+120°,   S, V)
+      Ceiling A = HSV(H+240°,   S, V)
+      Trim A    = HSV(H+270°,   S, V)
       Ignore A  = 25% grey  (hue-independent)
       Ignore B  = 75% grey  (hue-independent)
-      Island Marker A = Wall A
-      Island Marker B = 25% grey (fixed)
     B colours for Wall/Floor/Ceiling/Trim derived via global color_b_mode/color_b_notch.
+    S and V default to 1.0 and 0.5 if not set (backwards compatible).
     """
     if not prefs:
         print('[FBXMT] _derive_colours_from_anchor: prefs is None — aborting')
         return
 
-    h_base = prefs.anchor_hue % 1.0
+    h_base = float(prefs.anchor_hue) % 1.0
+    # anchor_saturation and anchor_value are EnumProperty — stored as strings, parse to float
+    s = float(getattr(prefs, 'anchor_saturation', '1.0'))
+    l = float(getattr(prefs, 'anchor_value',      '0.5'))  # stored as 'value', used as HLS lightness
     mode   = getattr(prefs, 'color_b_mode',  'DARKER')
     notch  = getattr(prefs, 'color_b_notch', 3)
 
     def _hue_col(offset_norm):
         h = (h_base + offset_norm) % 1.0
-        r, g, b = colorsys.hls_to_rgb(h, 0.5, 1.0)
+        r, g, b = colorsys.hls_to_rgb(h, l, s)
         return (r, g, b, 1.0)
 
     def _derive_b(col_a_rgb):
@@ -777,7 +778,6 @@ def _derive_colours_from_anchor(prefs):
     prefs.color_trim_a    = trim_a
     prefs.color_ignore_a  = (0.25, 0.25, 0.25, 1.0)
     prefs.color_ignore_b  = (0.75, 0.75, 0.75, 1.0)
-    prefs.color_island_b  = (0.25, 0.25, 0.25, 1.0)
 
     # B colours (Wall/Floor/Ceiling/Trim via global mode)
     prefs.color_wall_b    = _derive_b(wall_a[:3])
@@ -828,6 +828,12 @@ def rebuild_fbxmt_materials():
     global _materials_built
     prefs = _get_prefs()
 
+    # Clear island sub-material node trees to prevent stale cached colours
+    for name in ISLAND_SUB_NAMES:
+        mat = bpy.data.materials.get(name)
+        if mat and mat.use_nodes:
+            mat.node_tree.nodes.clear()
+
     # Slot key → material name mapping
     _SLOT_TO_MAT = {
         'floor':   'M_FBXMT_Floor',
@@ -860,36 +866,58 @@ def rebuild_fbxmt_materials():
         col_a_island, _, _ = _read_mat_settings('wall')
         if col_a_island is None:
             col_a_island = tuple(FBXMT_MATERIALS['M_FBXMT_Wall'][:3])
+
+        # Override sat/val with island-specific controls while keeping anchor hue
+        import colorsys
+        h, s, v = colorsys.rgb_to_hsv(*col_a_island[:3])
+        isl_sat = float(getattr(prefs, 'island_marker_saturation', '0.5'))
+        isl_val = float(getattr(prefs, 'island_marker_value', '0.5'))
+        col_a_island = colorsys.hsv_to_rgb(h, isl_sat, isl_val)
         _, _, pattern_island = _read_mat_settings('island')
         if pattern_island is None:
             pattern_island = 'SQUARE'
 
-        # Visible marker — B is mid-grey
+        # Visible marker — B derived from island-specific b mode
+        mode  = getattr(prefs, 'island_marker_b_mode',  'DARKER')
+        notch = getattr(prefs, 'island_marker_b_notch', 1)
+        col_b_island = _resolve_color_b(col_a_island, mode, col_a_island, notch, notch)
         marker = bpy.data.materials.get(ISLAND_MARKER_NAME) or bpy.data.materials.new(name=ISLAND_MARKER_NAME)
-        _build_checker_node_tree(marker, col_a_island, (0.5, 0.5, 0.5), pattern=pattern_island)
+        _build_checker_node_tree(marker, col_a_island, col_b_island, pattern=pattern_island)
         rebuilt.append(ISLAND_MARKER_NAME)
 
-        # Hidden sub-materials — Floor_01-05, Ceil_01-05, Wall_01-05
-        _group_settings = [
-            _read_mat_settings('floor'),    # group 0: Floor (i%3==0)
-            _read_mat_settings('ceiling'),  # group 1: Ceil  (i%3==1)
-            _read_mat_settings('wall'),     # group 2: Wall  (i%3==2)
+        # Hidden sub-materials — Wall_01-05, Floor_01-05, Ceil_01-05
+        # Island A = parent's colour B hue, with island sat/val controls
+        # Island B = derived from Island A using island_marker_b_mode
+        # Read parent B colours directly from prefs — most authoritative source
+        def _get_parent_b(slot):
+            col_a = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
+            return _resolve_color_b(col_a,
+                                    getattr(prefs, 'color_b_mode', 'DARKER'),
+                                    col_a,
+                                    getattr(prefs, 'color_b_notch', 1),
+                                    getattr(prefs, 'color_b_notch', 1))
+
+        _parent_b_cols = [
+            _get_parent_b('wall'),    # group 0: Wall_xx  (i%3==0)
+            _get_parent_b('floor'),   # group 1: Floor_xx (i%3==1)
+            _get_parent_b('ceiling'), # group 2: Ceil_xx  (i%3==2)
         ]
-        _offsets = [-0.4, -0.2, 0.0, 0.2, 0.4]
-        swap_ab  = getattr(prefs, 'island_swap_ab', False)
+        isl_mode  = getattr(prefs, 'island_marker_b_mode',  'DARKER')
+        isl_notch = getattr(prefs, 'island_marker_b_notch', 1)
+
         for i, name in enumerate(ISLAND_SUB_NAMES):
             mat      = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
-            group    = i % 3
-            slot     = i // 3
-            parent_a, _, _ = _group_settings[group]
-            if parent_a is None:
-                parent_a = col_a_island
-            h, l, s  = colorsys.rgb_to_hls(*parent_a)
-            hue_b    = (h + 0.5) % 1.0
-            off      = _offsets[slot]
-            col_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
-            a, b     = (col_b, parent_a) if swap_ab else (parent_a, col_b)
-            _build_checker_node_tree(mat, a, b, pattern=pattern_island, checker_invert=True)
+            group    = i % 3  # Wall(0), Floor(1), Ceil(2)
+            parent_b = _parent_b_cols[group]
+
+            # Island A = parent B hue with island sat/val
+            h, l, s  = colorsys.rgb_to_hls(*parent_b)
+            island_a = colorsys.hls_to_rgb(h, isl_val, isl_sat)
+
+            # Island B = derived from Island A via island b mode
+            island_b = _resolve_color_b(island_a, isl_mode, island_a, isl_notch, isl_notch)
+
+            _build_checker_node_tree(mat, island_a, island_b, pattern=pattern_island, checker_invert=True)
             rebuilt.append(name)
     except Exception as e:
         print(f'[FBXMT] Island rebuild failed: {type(e).__name__}: {e}')
@@ -1708,13 +1736,13 @@ class OT_FBXMT_Colour_Islands(Operator):
             world_mat  = obj.matrix_world
             z_axis     = Vector((0.0, 0.0, 1.0))
 
-            # Group index: 0=Floor, 1=Ceil, 2=Wall — matches interleaved ISLAND_SUB_NAMES
-            # ISLAND_SUB_NAMES[i]: group = i % 3, slot within group = i // 3
-            # Group slices (indices into ISLAND_SUB_NAMES):
+            # Group index: 0=Floor, 1=Ceil, 2=Wall
+            # ISLAND_SUB_NAMES is Wall/Floor/Ceil interleaved:
+            # Wall=0,3,6,9,12  Floor=1,4,7,10,13  Ceil=2,5,8,11,14
             _GROUP_INDICES = {
-                0: list(range(0, 15, 3)),   # Floor: 0,3,6,9,12
-                1: list(range(1, 15, 3)),   # Ceil:  1,4,7,10,13
-                2: list(range(2, 15, 3)),   # Wall:  2,5,8,11,14
+                0: list(range(1, 15, 3)),   # Floor: 1,4,7,10,13
+                1: list(range(2, 15, 3)),   # Ceil:  2,5,8,11,14
+                2: list(range(0, 15, 3)),   # Wall:  0,3,6,9,12
             }
 
             comp_group = []

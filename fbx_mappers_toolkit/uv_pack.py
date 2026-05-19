@@ -288,6 +288,198 @@ def _contains(outer, inner):
 
 
 # ---------------------------------------------------------------------------
+# Smart packer — 3-pass informed shelf packer
+# ---------------------------------------------------------------------------
+
+def smart_pack_islands(bm, uv_layer, mat_names):
+    """Repack all UV islands using a 3-pass informed shelf strategy.
+
+    Does not re-unwrap — reads existing UV coordinates, discards positions,
+    and re-places islands using a converging shelf algorithm.
+
+    mat_names: list of material name strings indexed by material_index.
+
+    Pass 1: bin width = sqrt(total area)  — theoretical minimum square
+    Pass 2: bin width = larger dimension of Pass 1 result
+    Pass 3: bin width = larger dimension of Pass 2 result
+    Best (most square) result of all 3 passes wins.
+
+    Constraints: translation only, no scale/rotate/flip, X>=0 Y>=0.
+    Returns a dict of stats for console reporting.
+    """
+    MIN_DIM = 1e-6
+
+    islands = _discover_islands(bm, uv_layer, mat_names)
+    islands = [isl for isl in islands if isl.w > MIN_DIM and isl.h > MIN_DIM]
+
+    if not islands:
+        return {'error': 'No valid UV islands found'}
+
+    total_area = sum(isl.w * isl.h for isl in islands)
+    ss1 = math.sqrt(total_area) if total_area > 0 else 1.0
+
+    # Sort into height bands, then by width descending within each band.
+    # Band tolerance: snap heights to nearest whole UV unit so that islands
+    # like h=16 and h=17 group together rather than being split by a 1-unit
+    # outlier. Within each band, widest-first fills shelves most efficiently.
+    BAND_SNAP = 1.0  # UV units — islands within this tolerance share a band
+    def band_key(isl):
+        band = round(isl.h / BAND_SNAP) * BAND_SNAP
+        return (-band, -isl.w)
+    islands_sorted = sorted(islands, key=band_key)
+
+    best_placements = None
+    best_score      = math.inf
+    best_pass       = 0
+    pass_results    = []
+
+    bin_w = ss1
+    for pass_num in range(1, 4):
+        bin_w = max(bin_w, max(isl.w for isl in islands_sorted) + MARGIN + 1e-9)
+
+        placements = _shelf_pack_smart(islands_sorted, bin_w)
+
+        max_x = max(tx + isl.w for isl, (tx, ty) in zip(islands_sorted, placements))
+        max_y = max(ty + isl.h for isl, (tx, ty) in zip(islands_sorted, placements))
+
+        larger  = max(max_x, max_y)
+        smaller = min(max_x, max_y)
+        score   = larger / smaller if smaller > 0 else math.inf
+
+        pass_results.append({'pass': pass_num, 'bin_w': bin_w, 'bbox': (max_x, max_y), 'score': score})
+
+        if score < best_score:
+            best_score      = score
+            best_placements = list(placements)
+            best_pass       = pass_num
+
+        bin_w = max(max_x, max_y)
+
+    # Apply winning placements
+    for isl, (tx, ty) in zip(islands_sorted, best_placements):
+        dx = tx - isl.min_u
+        dy = ty - isl.min_v
+        for loop in isl.loops:
+            uv = loop[uv_layer].uv
+            uv.x += dx
+            uv.y += dy
+
+    # Measure final bbox for efficiency
+    final_w = max(tx + isl.w for isl, (tx, ty) in zip(islands_sorted, best_placements))
+    final_h = max(ty + isl.h for isl, (tx, ty) in zip(islands_sorted, best_placements))
+    efficiency = (total_area / (final_w * final_h)) * 100.0 if final_w * final_h > 0 else 0.0
+
+    print('\n[FBXMT] Smart Pack Results')
+    print(f'  Islands:       {len(islands_sorted)}')
+    print(f'  Total UV area: {total_area:.6f}')
+    print(f'  SS1 (sqrt):    {ss1:.6f}')
+    print(f'  Islands (w x h -> band, sorted):')
+    for i, isl in enumerate(islands_sorted):
+        band = round(isl.h / 1.0) * 1.0
+        print(f'    [{i:02d}] w={isl.w:.4f}  h={isl.h:.4f}  band={band:.0f}  area={isl.w*isl.h:.4f}')
+    for r in pass_results:
+        winner = ' <- winner' if r['pass'] == best_pass else ''
+        print(f'  Pass {r["pass"]}: bin_w={r["bin_w"]:.4f}  bbox={r["bbox"][0]:.4f}x{r["bbox"][1]:.4f}  score={r["score"]:.4f}{winner}')
+    print(f'  Efficiency:    {efficiency:.1f}%')
+
+    return {'islands': len(islands_sorted), 'total_area': total_area,
+            'best_pass': best_pass, 'efficiency': efficiency}
+
+
+def _discover_islands(bm, uv_layer, mat_names):
+    """Discover UV islands using material assignment as island boundaries.
+
+    Rules:
+    - Faces with an Island sub-material (M_FBXMT_Island_*) are each their
+      own island — one face, one island by definition.
+    - All other FBXMT faces are grouped by mesh-edge adjacency within the
+      same material. Each connected group = one island.
+
+    mat_names: list of material name strings indexed by material_index,
+               matching obj.data.materials order (may contain None slots).
+
+    Returns list of _SmartIsland.
+    """
+    from .materials import ISLAND_SUB_PREFIX
+
+    # Bucket faces by material_index
+    buckets = {}
+    for face in bm.faces:
+        buckets.setdefault(face.material_index, []).append(face)
+
+    islands = []
+    for mat_idx, faces in buckets.items():
+        mat_name = mat_names[mat_idx] if mat_idx < len(mat_names) else None
+
+        if mat_name and mat_name.startswith(ISLAND_SUB_PREFIX):
+            # Island sub-material — every face is its own island
+            for face in faces:
+                islands.append(_SmartIsland(list(face.loops), uv_layer))
+        else:
+            # Group by mesh-edge adjacency within this material bucket
+            face_set    = {f.index for f in faces}
+            face_by_idx = {f.index: f for f in faces}
+            visited     = set()
+
+            for start_face in faces:
+                if start_face.index in visited:
+                    continue
+                stack       = [start_face]
+                group_loops = []
+                while stack:
+                    face = stack.pop()
+                    if face.index in visited:
+                        continue
+                    visited.add(face.index)
+                    group_loops.extend(face.loops)
+                    for edge in face.edges:
+                        for linked in edge.link_faces:
+                            if linked.index in face_set and linked.index not in visited:
+                                stack.append(linked)
+                islands.append(_SmartIsland(group_loops, uv_layer))
+
+    return islands
+
+
+class _SmartIsland:
+    """UV island measured from a flat list of loops."""
+    __slots__ = ('loops', 'min_u', 'min_v', 'w', 'h')
+
+    def __init__(self, loops, uv_layer):
+        self.loops = loops
+        min_u = min_v =  math.inf
+        max_u = max_v = -math.inf
+        for loop in loops:
+            u, v = loop[uv_layer].uv
+            if u < min_u: min_u = u
+            if u > max_u: max_u = u
+            if v < min_v: min_v = v
+            if v > max_v: max_v = v
+        self.min_u = min_u
+        self.min_v = min_v
+        self.w = max_u - min_u
+        self.h = max_v - min_v
+
+
+def _shelf_pack_smart(islands, bin_w):
+    """Left-to-right shelf packer. Returns list of (tx, ty) placements."""
+    placements = []
+    x = y = shelf_h = 0.0
+    for isl in islands:
+        iw = isl.w + MARGIN
+        ih = isl.h + MARGIN
+        if x + iw > bin_w and x > 0:
+            y       += shelf_h
+            x        = 0.0
+            shelf_h  = 0.0
+        placements.append((x, y))
+        x += iw
+        if ih > shelf_h:
+            shelf_h = ih
+    return placements
+
+
+# ---------------------------------------------------------------------------
 # Shelf-pack fallback (kept from original, used only if MaxRects errors out)
 # ---------------------------------------------------------------------------
 

@@ -31,10 +31,9 @@ from bpy.types import PropertyGroup
 
 
 _COLOR_B_MODE_ITEMS = [
-    ('DARKER',    'Darker',    'Derive B by darkening A'),
-    ('LIGHTER',   'Lighter',   'Derive B by lightening A'),
-    ('GREYSCALE', 'Greyscale', 'B is a fixed grey value'),
-    ('INVERSE',   'Inverse',   'B is the complementary hue of A'),
+    ('DARKER',  'Darker',  'Derive B by darkening A\'s lightness'),
+    ('LIGHTER', 'Lighter', 'Derive B by lightening A\'s lightness'),
+    ('INVERSE', 'Inverse', 'B uses the complementary hue of A'),
 ]
 
 PATTERN_ITEMS = [
@@ -90,16 +89,16 @@ class FBXMT_GlobalPrefs(PropertyGroup):
 
     # Base material checker colours — A and B for each surface type.
     # Applied on Rebuild. B defaults are 70% darkened versions of A.
-    color_floor_a:   bpy.props.FloatVectorProperty(name="Floor A",   subtype='COLOR', min=0, max=1, default=(0.3,  0.75, 0.3,  1.0), size=4)
-    color_floor_b:   bpy.props.FloatVectorProperty(name="Floor B",   subtype='COLOR', min=0, max=1, default=(0.2,  0.52, 0.2,  1.0), size=4)
-    color_ceiling_a: bpy.props.FloatVectorProperty(name="Ceiling A", subtype='COLOR', min=0, max=1, default=(0.3,  0.55, 0.9,  1.0), size=4)
-    color_ceiling_b: bpy.props.FloatVectorProperty(name="Ceiling B", subtype='COLOR', min=0, max=1, default=(0.2,  0.38, 0.63, 1.0), size=4)
-    color_wall_a:    bpy.props.FloatVectorProperty(name="Wall A",    subtype='COLOR', min=0, max=1, default=(0.9,  0.65, 0.2,  1.0), size=4)
-    color_wall_b:    bpy.props.FloatVectorProperty(name="Wall B",    subtype='COLOR', min=0, max=1, default=(0.63, 0.45, 0.14, 1.0), size=4)
-    color_trim_a:    bpy.props.FloatVectorProperty(name="Trim A",    subtype='COLOR', min=0, max=1, default=(0.75, 0.3,  0.75, 1.0), size=4)
-    color_trim_b:    bpy.props.FloatVectorProperty(name="Trim B",    subtype='COLOR', min=0, max=1, default=(0.52, 0.2,  0.52, 1.0), size=4)
-    color_ignore_a:  bpy.props.FloatVectorProperty(name="Ignore A",  subtype='COLOR', min=0, max=1, default=(0.25, 0.25, 0.25, 1.0), size=4)
-    color_ignore_b:  bpy.props.FloatVectorProperty(name="Ignore B",  subtype='COLOR', min=0, max=1, default=(0.15, 0.15, 0.15, 1.0), size=4)
+    color_floor_a:   bpy.props.FloatVectorProperty(name="Floor A",   subtype='COLOR_GAMMA', min=0, max=1, default=(0.3,  0.75, 0.3,  1.0), size=4)
+    color_floor_b:   bpy.props.FloatVectorProperty(name="Floor B",   subtype='COLOR_GAMMA', min=0, max=1, default=(0.2,  0.52, 0.2,  1.0), size=4)
+    color_ceiling_a: bpy.props.FloatVectorProperty(name="Ceiling A", subtype='COLOR_GAMMA', min=0, max=1, default=(0.3,  0.55, 0.9,  1.0), size=4)
+    color_ceiling_b: bpy.props.FloatVectorProperty(name="Ceiling B", subtype='COLOR_GAMMA', min=0, max=1, default=(0.2,  0.38, 0.63, 1.0), size=4)
+    color_wall_a:    bpy.props.FloatVectorProperty(name="Wall A",    subtype='COLOR_GAMMA', min=0, max=1, default=(0.9,  0.65, 0.2,  1.0), size=4)
+    color_wall_b:    bpy.props.FloatVectorProperty(name="Wall B",    subtype='COLOR_GAMMA', min=0, max=1, default=(0.63, 0.45, 0.14, 1.0), size=4)
+    color_trim_a:    bpy.props.FloatVectorProperty(name="Trim A",    subtype='COLOR_GAMMA', min=0, max=1, default=(0.75, 0.3,  0.75, 1.0), size=4)
+    color_trim_b:    bpy.props.FloatVectorProperty(name="Trim B",    subtype='COLOR_GAMMA', min=0, max=1, default=(0.52, 0.2,  0.52, 1.0), size=4)
+    color_ignore_a:  bpy.props.FloatVectorProperty(name="Ignore A",  subtype='COLOR_GAMMA', min=0, max=1, default=(0.25, 0.25, 0.25, 1.0), size=4)
+    color_ignore_b:  bpy.props.FloatVectorProperty(name="Ignore B",  subtype='COLOR_GAMMA', min=0, max=1, default=(0.15, 0.15, 0.15, 1.0), size=4)
     corner_hue_shift: bpy.props.FloatProperty(
         name="Corner Line Hue Shift",
         description=(
@@ -124,13 +123,57 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     # ── New wave — Setup V2 ────────────────────────────────────────────────
     # Single anchor hue drives all material A colours via fixed derivation.
     # S=1.0, L=0.5 fixed. B colours derived by one global mode.
-    anchor_hue: bpy.props.FloatProperty(
+    anchor_hue: bpy.props.EnumProperty(
         name="Anchor Hue",
-        description="Base hue from which all material colours are derived. "
-                    "0=red, 0.333=green, 0.667=blue. "
-                    "Wall=H, Floor=H+120°, Ceiling=H+240°, Trim=H+270°.",
-        default=0.0, min=0.0, max=1.0, step=1, precision=3,
-        subtype='NONE',
+        description="Base hue in 15° steps. Wall=H, Floor=H+120°, Ceiling=H+240°, Trim=H+270°.",
+        items=[
+            ('0.0000', '0° — Red',         ''),
+            ('0.0417', '15°',              ''),
+            ('0.0833', '30° — Orange',      ''),
+            ('0.1250', '45°',              ''),
+            ('0.1667', '60° — Yellow',     ''),
+            ('0.2083', '75°',              ''),
+            ('0.2500', '90° — Chartreuse', ''),
+            ('0.2917', '105°',             ''),
+            ('0.3333', '120° — Green',     ''),
+            ('0.3750', '135°',             ''),
+            ('0.4167', '150°',             ''),
+            ('0.4583', '165°',             ''),
+            ('0.5000', '180° — Cyan',      ''),
+            ('0.5417', '195°',             ''),
+            ('0.5833', '210°',             ''),
+            ('0.6250', '225°',             ''),
+            ('0.6667', '240° — Blue',      ''),
+            ('0.7083', '255°',             ''),
+            ('0.7500', '270° — Purple',    ''),
+            ('0.7917', '285°',             ''),
+            ('0.8333', '300° — Magenta',   ''),
+            ('0.8750', '315°',             ''),
+            ('0.9167', '330°',             ''),
+            ('0.9583', '345°',             ''),
+        ],
+        default='0.0000',
+    )
+    anchor_saturation: bpy.props.EnumProperty(
+        name="Anchor Saturation",
+        description="Saturation of all derived A colours",
+        items=[
+            ('1.0',  'Full',   'Full saturation (1.0)'),
+            ('0.75', 'High',   'High saturation (0.75)'),
+            ('0.5',  'Medium', 'Medium saturation (0.5)'),
+            ('0.25', 'Low',    'Low saturation (0.25)'),
+        ],
+        default='1.0',
+    )
+    anchor_value: bpy.props.EnumProperty(
+        name="Anchor Value",
+        description="Lightness/value of all derived A colours",
+        items=[
+            ('0.66', 'High',   'Bright (0.66)'),
+            ('0.5',  'Medium', 'Mid (0.5)'),
+            ('0.33', 'Low',    'Dark (0.33)'),
+        ],
+        default='0.5',
     )
     color_b_mode: bpy.props.EnumProperty(
         name="Colour B Mode",
@@ -139,9 +182,41 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         default='DARKER',
     )
     color_b_notch: bpy.props.IntProperty(
-        name="B Notch",
-        description="Lightness shift amount: 1=25%  2=50%  3=75%",
-        default=1, min=1, max=3,
+        name="B Amount",
+        description="Lightness shift amount: 1=20%  2=40%",
+        default=1, min=1, max=2,
+    )
+    island_marker_saturation: bpy.props.EnumProperty(
+        name="Island Sat",
+        description="Saturation of the Island Marker colour A",
+        items=[
+            ('1.0',  'Full',   'Full saturation (1.0)'),
+            ('0.75', 'High',   'High saturation (0.75)'),
+            ('0.5',  'Medium', 'Medium saturation (0.5)'),
+            ('0.25', 'Low',    'Low saturation (0.25)'),
+        ],
+        default='0.5',
+    )
+    island_marker_value: bpy.props.EnumProperty(
+        name="Island Val",
+        description="Value/lightness of the Island Marker colour A",
+        items=[
+            ('0.66', 'High',   'Bright (0.66)'),
+            ('0.5',  'Medium', 'Mid (0.5)'),
+            ('0.33', 'Low',    'Dark (0.33)'),
+        ],
+        default='0.5',
+    )
+    island_marker_b_mode: bpy.props.EnumProperty(
+        name="Island B Mode",
+        description="Colour B derivation mode for the Island Marker",
+        items=_COLOR_B_MODE_ITEMS,
+        default='DARKER',
+    )
+    island_marker_b_notch: bpy.props.IntProperty(
+        name="Island B Amount",
+        description="Lightness shift amount for island B: 1=20%  2=40%",
+        default=1, min=1, max=2,
     )
 
     # Per-material checker patterns (6 materials + island group)
@@ -158,11 +233,6 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     checker_pattern_island: bpy.props.EnumProperty(
         name="Island Pattern", description="Pattern for Island Marker and all island sub-materials",
         items=PATTERN_ITEMS, default='CIRCLE')
-    island_swap_ab: bpy.props.BoolProperty(
-        name="Swap A/B",
-        description="Swap colour A and B for all island sub-materials",
-        default=False,
-    )
 
     apex_line_seed: bpy.props.IntProperty(
         name="Apex Line Seed",
@@ -183,6 +253,20 @@ class FBXMT_GlobalPrefs(PropertyGroup):
     active_preset_name: bpy.props.StringProperty(
         name="Active Preset",
         description="Name of the last Full preset loaded. Cleared when lock is manually released.",
+        default='',
+    )
+    presets_path: bpy.props.StringProperty(
+        name="Presets Folder",
+        description="Folder where material presets (.json) are stored. "
+                    "Saved with the blend file and startup template — persists across sessions.",
+        subtype='DIR_PATH',
+        default='',
+    )
+    contact_sheet_output_path: bpy.props.StringProperty(
+        name="Contact Sheet Output",
+        description="Folder where contact sheets are saved. Defaults to MaterialCache/ next to the blend file. "
+                    "Set to a shared network path to publish directly to a team docs server.",
+        subtype='DIR_PATH',
         default='',
     )
 
@@ -287,4 +371,59 @@ class FBXMT_Props(PropertyGroup):
         name='Fresh Template',
         default=False,
         description='Set by Save Template operator; cleared by load_post after firing Project Setup',
+    )
+    setup_tab: bpy.props.EnumProperty(
+        name='Setup Tab',
+        description='Active tab in the Project Setup dialog',
+        items=[
+            ('MATERIALS', 'Materials', 'Material and checker settings', 'SHADING_RENDERED', 0),
+            ('PROJECT',   'Project',   'Paths, import and presets',     'PROPERTIES',       1),
+        ],
+        default='MATERIALS',
+    )
+
+    # ── Trim Generation ───────────────────────────────────────────────────────
+    trim_thickness: bpy.props.FloatProperty(
+        name='Thickness',
+        description='How proud the trim stands from the wall surface',
+        default=0.1, min=0.001, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    trim_vert_cover: bpy.props.FloatProperty(
+        name='Wall Cover Depth',
+        description='How far the trim runs down/up the wall arm',
+        default=0.5, min=0.01, max=10.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+    trim_horiz_cover: bpy.props.FloatProperty(
+        name='Floor Cover Depth',
+        description='How far the trim runs along the floor/ceiling arm',
+        default=0.5, min=0.01, max=10.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+    trim_wall_a_cover: bpy.props.FloatProperty(
+        name='Wall A Depth',
+        description='How far the trim runs along Wall A arm (wall/wall seams)',
+        default=0.5, min=0.01, max=10.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+    trim_wall_b_cover: bpy.props.FloatProperty(
+        name='Wall B Depth',
+        description='How far the trim runs along Wall B arm (wall/wall seams)',
+        default=0.5, min=0.01, max=10.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+    trim_chamfer_BD: bpy.props.BoolProperty(
+        # B→C→D cap face: the cap at the far end of the first arm of the L profile.
+        # When enabled, extends the inner edge (D) by one thickness, making the cap diagonal.
+        name='Chamfer B-D',
+        description='Chamfer the B→D cap face (first arm end)',
+        default=False,
+    )
+    trim_chamfer_DF: bpy.props.BoolProperty(
+        # D→E→F cap face: the cap at the far end of the second arm of the L profile.
+        # When enabled, extends the inner edge (F) by one thickness, making the cap diagonal.
+        name='Chamfer D-F',
+        description='Chamfer the D→F cap face (second arm end)',
+        default=False,
     )

@@ -108,11 +108,10 @@ class FBXMT_AddonPreferences(AddonPreferences):
         default=True,
     )
 
-    presets_path: bpy.props.StringProperty(
-        name="Presets Folder",
-        description="Folder where material presets (.json) are stored. Point a team at a shared network folder.",
-        subtype='DIR_PATH',
-        default='',
+    enable_primitives: bpy.props.BoolProperty(
+        name="Enable FBXMT Primitives",
+        description="Add FBXMT Primitives submenu to Shift+A. Disable to keep the menu clean if you don't need level design primitives",
+        default=True,
     )
 
     def draw(self, context):
@@ -120,7 +119,7 @@ class FBXMT_AddonPreferences(AddonPreferences):
         layout.label(text="Preferences are in the FBX Toolkit N-panel.", icon="INFO")
         layout.label(text="Open the 3D Viewport, press N, select the FBX Toolkit tab.")
         layout.prop(self, "show_setup_on_new")
-        layout.prop(self, "presets_path")
+        layout.prop(self, "enable_primitives")
 
 
 
@@ -150,7 +149,8 @@ class FBXMT_PT_Main(Panel):
     bl_category    = "FBX Toolkit"
 
     def draw(self, context):
-        pass
+        from . import __version__
+        self.layout.label(text=f"v{__version__}", icon='INFO')
 
 
 # ─── Scene Setup ──────────────────────────────────────────────────────────────
@@ -339,6 +339,11 @@ class FBXMT_PT_UVUnwrap(Panel):
         if in_trim_or_props:
             layout.label(text="Unwrap disabled for Trim/Props", icon="INFO")
 
+        # Smart Pack — hidden until ready
+        # row = layout.row()
+        # row.scale_y = 1.2
+        # row.operator("fbxmt.smart_pack", text="Smart Pack UVs", icon="SORTSIZE")
+
         row = layout.row()
         row.scale_y = 1.2
         row.operator("fbxmt.uv_preview", text="Preview UVs as Mesh", icon="MESH_GRID")
@@ -398,3 +403,59 @@ class FBXMT_PT_Export(Panel):
         row.scale_y = 1.4
         row.enabled = bool(props.export_path)
         row.operator("unreal.collision_exporter", text="Export Selected", icon="EXPORT")
+
+
+# ─── Trim Generation ──────────────────────────────────────────────────────────
+
+class FBXMT_PT_TrimGen(Panel):
+    bl_space_type  = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_label       = "Trim Generation"
+    bl_category    = "FBX Toolkit"
+    bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 6
+    bl_options     = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        props  = context.scene.fbxmt_props
+        in_edit = context.mode == 'EDIT_MESH'
+
+        # Dimensions
+        box_fw = layout.box()
+        box_fw.label(text="Floor / Wall Trim", icon='EDGESEL')
+        col = box_fw.column(align=True)
+        col.prop(props, 'trim_thickness')
+        col.prop(props, 'trim_horiz_cover', text='Floor Cover Depth')
+        col.prop(props, 'trim_vert_cover',  text='Wall Cover Depth')
+
+        box_ww = layout.box()
+        box_ww.label(text="Wall Run Trim", icon='EDGESEL')
+        col_ww = box_ww.column(align=True)
+        col_ww.prop(props, 'trim_wall_a_cover', text='Wall A Depth')
+        col_ww.prop(props, 'trim_wall_b_cover', text='Wall B Depth')
+
+        layout.separator()
+
+        # Cap style
+        box = layout.box()
+        box.label(text="Cap Style", icon='MOD_BEVEL')
+        col2 = box.column(align=True)
+        row = col2.row(align=True)
+        row.label(text="B→D Cap")
+        row.prop(props, 'trim_chamfer_BD', text="Chamfer", toggle=True)
+        row2 = col2.row(align=True)
+        row2.label(text="D→F Cap")
+        row2.prop(props, 'trim_chamfer_DF', text="Chamfer", toggle=True)
+
+        layout.separator()
+
+        if not in_edit:
+            col3 = layout.column()
+            col3.label(text="Enter Edit Mode and", icon='INFO')
+            col3.label(text="select seam edges first.")
+
+        row3 = layout.row()
+        row3.scale_y = 1.4
+        row3.enabled = in_edit
+        row3.operator('fbxmt.generate_trim', text='Generate Trim', icon='MOD_SOLIDIFY')

@@ -392,3 +392,23 @@ CHANGELOG
        Fix: Dead colour callbacks removed.
 
 2.6.x  See previous release notes for 2.6.x history.
+
+2.9.37 Feature: Trim Generator — procedural seam trim along selected edge chains.
+       Select edges at floor/wall junctions, run Generate Trim (N-panel,
+       right-click context menu, or Q menu in edge select mode). Generates
+       a clean manifold T-profile mesh swept along the chain, mitered at
+       corners, with two-quad end caps on open chains and closed-loop
+       support. Output placed in Trim collection.
+       Feature: Trim panel — trim_thickness, trim_horiz_cover (floor cover
+       depth), trim_vert_cover (wall cover depth), trim_wall_a_cover,
+       trim_wall_b_cover for wall-run seams.
+       Feature: Generate Trim added to viewport right-click context menu
+       and Q menu — only visible in edge select mode.
+       Fix: Floor arm depth (horiz_cover) was always one thickness short.
+       Bp is now measured from seam vertex A, not from proud point Dw.
+       Fix: Generated trim now placed in Trim collection, not Geo.
+       Known: Wall/wall (wall-run) seams produce incorrect geometry at
+       90-degree convex corners. Under active development.
+       Known: Ramp/wall seams not yet supported — requires _edge_frame
+       refactor to replace Z-threshold classification with cross(T,n)
+       arm derivation.

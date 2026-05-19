@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "2.9.2"
+__version__ = "2.9.37"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -35,8 +35,10 @@ from .materials import (
     register_material_props,
     unregister_material_props,
 )
-from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview
+from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview, OT_FBXMT_SmartPack
+from .trim_gen import OT_FBXMT_Generate_Trim
 from .props import FBXMT_GlobalPrefs, FBXMT_Props
+from .primitives import register_primitives, unregister_primitives
 from .project_setup import (
     FBXMT_OT_ProjectSetup,
     FBXMT_OT_ProjectSetup_UpdateTile,
@@ -49,6 +51,8 @@ from .project_setup import (
     OT_FBXMT_SelectTile,
     OT_FBXMT_ApplyBToAll,
     FBXMT_OT_TogglePresetLock,
+    FBXMT_OT_ProjectSetup_ContactSheet_Disk,
+    FBXMT_MT_ContactSheet_Dropdown,
     register as register_project_setup,
     unregister as unregister_project_setup,
 )
@@ -62,6 +66,7 @@ from .panel import (
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
     FBXMT_PT_Export,
+    FBXMT_PT_TrimGen,
 )
 
 # Operators, Panels, PropertyGroups, and Menus must be registered manually.
@@ -97,6 +102,8 @@ classes = (
     OT_UT4_Import_FBX_Multi,
     OT_FBXMT_Assign_Materials,
     OT_FBXMT_UV_Unwrap,
+    OT_FBXMT_SmartPack,
+    OT_FBXMT_Generate_Trim,
     OT_FBXMT_Save_Template,
     OT_FBXMT_Export,
     FBXMT_PT_Main,
@@ -104,8 +111,15 @@ classes = (
     FBXMT_PT_Materials,
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
+    FBXMT_PT_TrimGen,
     FBXMT_PT_Export,
 )
+
+
+def _draw_trim_context_menu(self, context):
+    if context.tool_settings.mesh_select_mode[1]:  # edge select mode
+        self.layout.separator()
+        self.layout.operator('fbxmt.generate_trim', icon='MOD_EDGESPLIT')
 
 
 def register():
@@ -136,9 +150,21 @@ def register():
     register_material_props()
     register_project_setup()
     register_handlers()
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_draw_trim_context_menu)
+    bpy.types.VIEW3D_MT_edit_mesh.append(_draw_trim_context_menu)
+    # Primitives — optional, gated on addon preference
+    try:
+        addon = bpy.context.preferences.addons.get(__package__)
+        if addon is None or addon.preferences.enable_primitives:
+            register_primitives()
+    except Exception:
+        register_primitives()  # safe fallback if prefs unreadable at load time
 
 
 def unregister():
+    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(_draw_trim_context_menu)
+    bpy.types.VIEW3D_MT_edit_mesh.remove(_draw_trim_context_menu)
+    unregister_primitives()
     unregister_handlers()
     unregister_project_setup()
     unregister_material_props()
