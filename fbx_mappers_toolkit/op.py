@@ -45,7 +45,8 @@ class OT_FBXMT_Export(Operator):
         # If bake is disabled, naked faces don't affect export correctness.
         from .materials import (check_naked_faces, CHAIN_NAMES,
             ISLAND_SUB_NAMES, ISLAND_MARKER_NAME, FBXMT_FLOOR_MATERIALS,
-            FBXMT_WALL_MATERIALS, FBXMT_IGNORE_MATERIAL, _is_island_sub_material)
+            FBXMT_WALL_MATERIALS, FBXMT_IGNORE_MATERIAL, _is_island_sub_material,
+            ALL_ISLAND_SUB_NAMES)
         bake_textures  = props.bake_textures
         if bake_textures:
             naked = check_naked_faces(mesh_objects)
@@ -174,7 +175,7 @@ class OT_FBXMT_Export(Operator):
             strip_idxs = [
                 i for i, slot in enumerate(mesh.materials)
                 if slot and (
-                    slot.name in set(ISLAND_SUB_NAMES) or
+                    slot.name in set(ALL_ISLAND_SUB_NAMES) or
                     slot.name == ISLAND_MARKER_NAME or
                     slot.name in set(CHAIN_NAMES)
                 ) and i not in used_idxs

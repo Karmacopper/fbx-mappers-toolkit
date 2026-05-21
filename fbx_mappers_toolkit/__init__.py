@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "2.9.37"
+__version__ = "2.9.38"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -42,7 +42,6 @@ from .primitives import register_primitives, unregister_primitives
 from .project_setup import (
     FBXMT_OT_ProjectSetup,
     FBXMT_OT_ProjectSetup_UpdateTile,
-    FBXMT_OT_ProjectSetup_Preview,
     FBXMT_OT_ProjectSetup_ContactSheet,
     FBXMT_OT_BakeAllModal,
     OT_FBXMT_Preset_Save,

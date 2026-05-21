@@ -9,7 +9,6 @@
 #   - All colour properties live on FBXMT_GlobalPrefs (scene.fbxmt_prefs_global)
 #   - Operational state (index, stale flag, hash) lives on FBXMT_Props (scene.fbxmt_props)
 #   - _bake_material_emit reused from op.py — no duplication of bake logic
-#   - No PNG files shipped — all preview geometry is hardcoded procedural bmesh
 #   - ShaderNodeMix(data_type='RGBA') only — no ShaderNodeMixRGB, no ShaderNodeInvert
 
 import bpy
@@ -23,9 +22,8 @@ from mathutils import Vector
 from bpy.types import Operator
 from bpy.props import IntProperty, BoolProperty
 
-from .materials import _get_prefs, ensure_fbxmt_materials, rebuild_fbxmt_materials
+from .materials import _get_prefs, ensure_fbxmt_materials, rebuild_fbxmt_materials, _safe_float
 from .panel import _draw_preset_lock_ticker
-from .uv_unwrap import unwrap_mesh
 
 
 # ─── Constants ────────────────────────────────────────────────────────────────
@@ -33,10 +31,12 @@ from .uv_unwrap import unwrap_mesh
 # Surface materials that get the split tile (top=parent, bottom=island steps) in dialog preview
 _SPLIT_TILE_MATS = {'M_FBXMT_Floor', 'M_FBXMT_Ceiling', 'M_FBXMT_Wall'}
 
-# 6 visible materials in display order
+# 8 visible materials in display order
 ALL_DISPLAY_MATERIAL_NAMES = [
     'M_FBXMT_Wall',
+    'M_FBXMT_Ramp_Floor',
     'M_FBXMT_Floor',
+    'M_FBXMT_Ramp_Ceiling',
     'M_FBXMT_Ceiling',
     'M_FBXMT_Trim',
     'M_FBXMT_Ignore',
@@ -102,13 +102,15 @@ def _snap_px(frac, size):
 
 
 # ─── Colour property maps ─────────────────────────────────────────────────────
-_MAT_COLOR_PROPS = [
-    ('color_floor_a',   'color_floor_b'),
-    ('color_ceiling_a', 'color_ceiling_b'),
-    ('color_wall_a',    'color_wall_b'),
-    ('color_trim_a',    'color_trim_b'),
-    ('color_ignore_a',  'color_ignore_b'),
-    # Island excluded — colour derived from wall A at build time, not stored independently
+# A-only — B is always derived, never stored
+_MAT_COLOR_PROPS_A = [
+    'color_floor_a',
+    'color_ceiling_a',
+    'color_wall_a',
+    'color_trim_a',
+    'color_ignore_a',
+    'color_ramp_floor_a',
+    'color_ramp_ceiling_a',
 ]
 
 _MAT_DISPLAY_NAMES = {
@@ -118,7 +120,8 @@ _MAT_DISPLAY_NAMES = {
     'M_FBXMT_Trim':           'Trim',
     'M_FBXMT_Ignore':         'Ignore',
     'M_FBXMT_Island':         'Island Marker',
-    'M_FBXMT_Island_Wall_03': 'Island',
+    'M_FBXMT_Ramp_Floor':     'Ramp Floor',
+    'M_FBXMT_Ramp_Ceiling':   'Ramp Ceiling',
 }
 
 
@@ -128,402 +131,6 @@ _MAT_DISPLAY_NAMES = {
 # FBXMT_Preview_Island_Chains: Q3DM6-inspired stacked curves showing all 5 chains
 # Exported from Blender, processed through the toolkit's own unwrap pipeline.
 
-_PREVIEW_GEO_TRIM_VERTS = [
-    (2.0000, -0.3446, -0.0682),
-    (2.0000, 0.6554, -0.5682),
-    (2.0000, 0.6554, -0.4182),
-    (2.0000, -0.2446, 0.0318),
-    (-2.0000, -0.3446, -0.0682),
-    (-2.0000, 0.6554, -0.5682),
-    (-2.0000, 0.6554, -0.4182),
-    (-2.0000, -0.2446, 0.0318),
-    (-1.0000, -0.3446, 0.5318),
-    (1.0000, -0.3446, 0.5318),
-    (1.0000, -0.2446, 0.5318),
-    (-1.0000, -0.2446, 0.5318),
-    (0.0696, -0.3446, 0.9039),
-    (-0.0696, -0.3446, 0.9039),
-    (0.0492, -0.3446, 0.9102),
-    (0.0255, -0.3446, 0.9141),
-    (0.0000, -0.3446, 0.9154),
-    (-0.0255, -0.3446, 0.9141),
-    (-0.0492, -0.3446, 0.9102),
-    (-0.0696, -0.2446, 0.9039),
-    (0.0696, -0.2446, 0.9039),
-    (-0.0492, -0.2446, 0.9102),
-    (-0.0255, -0.2446, 0.9141),
-    (0.0000, -0.2446, 0.9154),
-    (0.0255, -0.2446, 0.9141),
-    (0.0492, -0.2446, 0.9102),
-    (2.0000, -0.3446, 0.8568),
-    (1.9304, -0.3446, 0.9039),
-    (1.9976, -0.3446, 0.8752),
-    (1.9907, -0.3446, 0.8905),
-    (1.9796, -0.3446, 0.9016),
-    (1.9652, -0.3446, 0.9078),
-    (1.9484, -0.3446, 0.9086),
-    (1.9304, -0.2446, 0.9039),
-    (2.0000, -0.2446, 0.8568),
-    (1.9484, -0.2446, 0.9086),
-    (1.9652, -0.2446, 0.9078),
-    (1.9796, -0.2446, 0.9016),
-    (1.9907, -0.2446, 0.8905),
-    (1.9976, -0.2446, 0.8752),
-    (-2.0000, -0.2446, 0.8568),
-    (-1.9304, -0.2446, 0.9039),
-    (-1.9976, -0.2446, 0.8752),
-    (-1.9907, -0.2446, 0.8905),
-    (-1.9796, -0.2446, 0.9016),
-    (-1.9652, -0.2446, 0.9078),
-    (-1.9484, -0.2446, 0.9086),
-    (-1.9304, -0.3446, 0.9039),
-    (-2.0000, -0.3446, 0.8568),
-    (-1.9484, -0.3446, 0.9086),
-    (-1.9652, -0.3446, 0.9078),
-    (-1.9796, -0.3446, 0.9016),
-    (-1.9907, -0.3446, 0.8905),
-    (-1.9976, -0.3446, 0.8752),
-    (-2.0000, -0.3508, -2.0500),
-    (0.0000, -0.3508, -2.0500),
-    (-2.0000, -0.3508, 3.9500),
-    (0.0000, -0.3508, 3.9500),
-    (-2.0000, -0.3508, 1.9500),
-    (-2.0000, -0.3508, -0.0500),
-    (0.0000, -0.3508, -0.0500),
-    (0.0000, -0.3508, 1.9500),
-    (-2.0000, 1.6492, -1.0500),
-    (-2.0000, 1.6492, -2.0500),
-    (0.0000, 1.6492, -2.0500),
-    (0.0000, 1.6492, 2.9500),
-    (0.0000, 1.6492, 3.9500),
-    (-2.0000, 1.6492, 3.9500),
-    (-2.0000, 1.6492, 2.9500),
-    (0.0000, 1.6492, -1.0500),
-    (-2.0000, -1.3508, -0.0500),
-    (-2.0000, -1.3508, -2.0500),
-    (0.0000, -1.3508, -2.0500),
-    (0.0000, -1.3508, 1.9500),
-    (0.0000, -1.3508, 3.9500),
-    (-2.0000, -1.3508, 3.9500),
-    (-2.0000, -1.3508, 1.9500),
-    (0.0000, -1.3508, -0.0500),
-    (2.0000, -0.3508, -0.0500),
-    (2.0000, -0.3508, 1.9500),
-    (2.0000, 1.6492, 2.9500),
-    (2.0000, 1.6492, 3.9500),
-    (2.0000, 1.6492, -2.0500),
-    (2.0000, 1.6492, -1.0500),
-    (2.0000, -0.3508, 3.9500),
-    (2.0000, -0.3508, -2.0500),
-    (2.0000, -1.3508, 1.9500),
-    (2.0000, -1.3508, 3.9500),
-    (2.0000, -1.3508, -2.0500),
-    (2.0000, -1.3508, -0.0500),
-]
-
-_PREVIEW_GEO_TRIM_FACES = [
-    ((1, 5, 6, 2), 'M_FBXMT_Trim'),
-    ((2, 6, 7, 3), 'M_FBXMT_Trim'),
-    ((0, 4, 5, 1), 'M_FBXMT_Trim'),
-    ((19, 13, 18, 21), 'M_FBXMT_Trim'),
-    ((21, 18, 17, 22), 'M_FBXMT_Trim'),
-    ((22, 17, 16, 23), 'M_FBXMT_Trim'),
-    ((23, 16, 15, 24), 'M_FBXMT_Trim'),
-    ((24, 15, 14, 25), 'M_FBXMT_Trim'),
-    ((25, 14, 12, 20), 'M_FBXMT_Trim'),
-    ((19, 11, 8, 13), 'M_FBXMT_Trim'),
-    ((10, 20, 12, 9), 'M_FBXMT_Trim'),
-    ((47, 41, 46, 49), 'M_FBXMT_Trim'),
-    ((49, 46, 45, 50), 'M_FBXMT_Trim'),
-    ((50, 45, 44, 51), 'M_FBXMT_Trim'),
-    ((51, 44, 43, 52), 'M_FBXMT_Trim'),
-    ((52, 43, 42, 53), 'M_FBXMT_Trim'),
-    ((53, 42, 40, 48), 'M_FBXMT_Trim'),
-    ((26, 34, 39, 28), 'M_FBXMT_Trim'),
-    ((28, 39, 38, 29), 'M_FBXMT_Trim'),
-    ((29, 38, 37, 30), 'M_FBXMT_Trim'),
-    ((30, 37, 36, 31), 'M_FBXMT_Trim'),
-    ((31, 36, 35, 32), 'M_FBXMT_Trim'),
-    ((32, 35, 33, 27), 'M_FBXMT_Trim'),
-    ((26, 28, 29, 30, 31, 32, 27, 9, 12, 14, 15, 16, 17, 18, 13, 8, 47, 49, 50, 51, 52, 53, 48, 4, 0), 'M_FBXMT_Trim'),
-    ((0, 1, 2, 3, 34, 26), 'M_FBXMT_Trim'),
-    ((33, 10, 9, 27), 'M_FBXMT_Trim'),
-    ((3, 7, 40, 42, 43, 44, 45, 46, 41, 11, 19, 21, 22, 23, 24, 25, 20, 10, 33, 35, 36, 37, 38, 39, 34), 'M_FBXMT_Trim'),
-    ((4, 48, 40, 7, 6, 5), 'M_FBXMT_Trim'),
-    ((11, 41, 47, 8), 'M_FBXMT_Trim'),
-    ((68, 67, 66, 65), 'M_FBXMT_Wall'),
-    ((63, 62, 69, 64), 'M_FBXMT_Wall'),
-    ((58, 68, 65, 61), 'M_FBXMT_Ceiling'),
-    ((54, 63, 64, 55, 72, 71), 'M_FBXMT_Ceiling'),
-    ((58, 61, 60, 59), 'M_FBXMT_Wall'),
-    ((60, 69, 62, 59), 'M_FBXMT_Floor'),
-    ((59, 62, 63, 54, 71, 70, 76, 75, 56, 67, 68, 58), 'M_FBXMT_Wall'),
-    ((57, 66, 67, 56, 75, 74), 'M_FBXMT_Floor'),
-    ((77, 73, 74, 75, 76, 70, 71, 72), 'M_FBXMT_Wall'),
-    ((66, 57, 84, 81), 'M_FBXMT_Floor'),
-    ((79, 80, 81, 84, 87, 86, 89, 88, 85, 82, 83, 78), 'M_FBXMT_Ignore'),
-    ((69, 60, 78, 83), 'M_FBXMT_Floor'),
-    ((77, 72, 88, 89), 'M_FBXMT_Wall'),
-    ((64, 69, 83, 82), 'M_FBXMT_Wall'),
-    ((65, 66, 81, 80), 'M_FBXMT_Wall'),
-    ((61, 65, 80, 79), 'M_FBXMT_Ceiling'),
-    ((73, 77, 89, 86), 'M_FBXMT_Wall'),
-    ((72, 55, 85, 88), 'M_FBXMT_Ceiling'),
-    ((57, 74, 87, 84), 'M_FBXMT_Floor'),
-    ((60, 61, 79, 78), 'M_FBXMT_Wall'),
-    ((55, 64, 82, 85), 'M_FBXMT_Ceiling'),
-    ((74, 73, 86, 87), 'M_FBXMT_Wall'),
-]
-
-_PREVIEW_ISLAND_CHAINS_VERTS = [
-    (0.2758, -0.2867, 0.5357),
-    (0.2758, -0.2867, 0.7500),
-    (0.1661, -0.2759, 0.7500),
-    (0.1661, -0.2759, 0.5357),
-    (0.1441, -0.3862, 0.5357),
-    (0.2758, -0.3992, 0.5357),
-    (0.2758, 0.2758, 0.7500),
-    (0.2758, -0.3992, 0.3214),
-    (0.2758, -0.2867, 0.3214),
-    (0.2758, -0.2867, 0.1071),
-    (0.2758, -0.3992, 0.1071),
-    (0.2758, -0.3992, -0.1071),
-    (0.2758, -0.2867, -0.1071),
-    (0.2758, -0.2867, -0.3214),
-    (0.2758, -0.3992, -0.3214),
-    (0.2758, -0.3992, -0.5357),
-    (0.2758, -0.2867, -0.5357),
-    (0.2758, -0.2867, -0.7500),
-    (0.2758, 0.2758, -0.7500),
-    (-0.2867, 0.2758, 0.7500),
-    (-0.2759, 0.1661, 0.7500),
-    (-0.2439, 0.0605, 0.7500),
-    (-0.1919, -0.0367, 0.7500),
-    (-0.1219, -0.1219, 0.7500),
-    (-0.0367, -0.1919, 0.7500),
-    (0.0606, -0.2439, 0.7500),
-    (0.0606, -0.2439, 0.5357),
-    (0.0175, -0.3478, 0.5357),
-    (0.1441, -0.3862, 0.3214),
-    (0.1661, -0.2759, 0.3214),
-    (0.1661, -0.2759, 0.1071),
-    (0.1441, -0.3862, 0.1071),
-    (0.1441, -0.3862, -0.1071),
-    (0.1661, -0.2759, -0.1071),
-    (0.1661, -0.2759, -0.3214),
-    (0.1441, -0.3862, -0.3214),
-    (0.1441, -0.3862, -0.5357),
-    (0.1661, -0.2759, -0.5357),
-    (0.1661, -0.2759, -0.7500),
-    (0.0606, -0.2439, -0.7500),
-    (-0.0367, -0.1919, -0.7500),
-    (-0.1219, -0.1219, -0.7500),
-    (-0.1919, -0.0367, -0.7500),
-    (-0.2439, 0.0605, -0.7500),
-    (-0.2759, 0.1661, -0.7500),
-    (-0.2867, 0.2758, -0.7500),
-    (-0.2759, 0.1661, 0.5357),
-    (-0.2867, 0.2758, 0.5357),
-    (-0.2439, 0.0605, 0.5357),
-    (-0.1919, -0.0367, 0.5357),
-    (-0.1219, -0.1219, 0.5357),
-    (-0.0367, -0.1919, 0.5357),
-    (-0.0992, -0.2854, 0.5357),
-    (0.0175, -0.3478, 0.3214),
-    (0.0606, -0.2439, 0.3214),
-    (0.0606, -0.2439, 0.1071),
-    (0.0175, -0.3478, 0.1071),
-    (0.0175, -0.3478, -0.1071),
-    (0.0606, -0.2439, -0.1071),
-    (0.0606, -0.2439, -0.3214),
-    (0.0175, -0.3478, -0.3214),
-    (0.0175, -0.3478, -0.5357),
-    (0.0606, -0.2439, -0.5357),
-    (-0.0367, -0.1919, -0.5357),
-    (-0.1219, -0.1219, -0.5357),
-    (-0.1919, -0.0367, -0.5357),
-    (-0.2439, 0.0605, -0.5357),
-    (-0.2759, 0.1661, -0.5357),
-    (-0.2867, 0.2758, -0.5357),
-    (-0.3992, 0.2758, 0.5357),
-    (-0.3862, 0.1441, 0.5357),
-    (-0.3478, 0.0175, 0.5357),
-    (-0.2854, -0.0992, 0.5357),
-    (-0.2015, -0.2015, 0.5357),
-    (-0.0992, -0.2854, 0.3214),
-    (-0.0367, -0.1919, 0.3214),
-    (-0.0367, -0.1919, 0.1071),
-    (-0.0992, -0.2854, 0.1071),
-    (-0.0992, -0.2854, -0.1071),
-    (-0.0367, -0.1919, -0.1071),
-    (-0.0367, -0.1919, -0.3214),
-    (-0.0992, -0.2854, -0.3214),
-    (-0.0992, -0.2854, -0.5357),
-    (-0.2015, -0.2015, -0.5357),
-    (-0.2854, -0.0992, -0.5357),
-    (-0.3478, 0.0175, -0.5357),
-    (-0.3862, 0.1441, -0.5357),
-    (-0.3992, 0.2758, -0.5357),
-    (-0.3862, 0.1441, 0.3214),
-    (-0.3992, 0.2758, 0.3214),
-    (-0.3478, 0.0175, 0.3214),
-    (-0.2854, -0.0992, 0.3214),
-    (-0.2015, -0.2015, 0.3214),
-    (-0.1219, -0.1219, 0.3214),
-    (-0.1219, -0.1219, 0.1071),
-    (-0.2015, -0.2015, 0.1071),
-    (-0.2015, -0.2015, -0.1071),
-    (-0.1219, -0.1219, -0.1071),
-    (-0.1219, -0.1219, -0.3214),
-    (-0.2015, -0.2015, -0.3214),
-    (-0.2854, -0.0992, -0.3214),
-    (-0.3478, 0.0175, -0.3214),
-    (-0.3862, 0.1441, -0.3214),
-    (-0.3992, 0.2758, -0.3214),
-    (-0.2867, 0.2758, 0.3214),
-    (-0.2759, 0.1661, 0.3214),
-    (-0.2439, 0.0605, 0.3214),
-    (-0.1919, -0.0367, 0.3214),
-    (-0.1919, -0.0367, 0.1071),
-    (-0.2854, -0.0992, 0.1071),
-    (-0.2854, -0.0992, -0.1071),
-    (-0.1919, -0.0367, -0.1071),
-    (-0.1919, -0.0367, -0.3214),
-    (-0.2439, 0.0605, -0.3214),
-    (-0.2759, 0.1661, -0.3214),
-    (-0.2867, 0.2758, -0.3214),
-    (-0.2759, 0.1661, 0.1071),
-    (-0.2867, 0.2758, 0.1071),
-    (-0.2439, 0.0605, 0.1071),
-    (-0.3478, 0.0175, 0.1071),
-    (-0.3478, 0.0175, -0.1071),
-    (-0.2439, 0.0605, -0.1071),
-    (-0.2759, 0.1661, -0.1071),
-    (-0.2867, 0.2758, -0.1071),
-    (-0.3992, 0.2758, 0.1071),
-    (-0.3862, 0.1441, 0.1071),
-    (-0.3862, 0.1441, -0.1071),
-    (-0.3992, 0.2758, -0.1071),
-]
-
-_PREVIEW_ISLAND_CHAINS_FACES = [
-    ((0, 1, 2, 3), 'M_FBXMT_Wall'),
-    ((0, 3, 4, 5), 'M_FBXMT_Floor'),
-    ((6, 1, 0, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18), 'M_FBXMT_Wall'),
-    ((19, 20, 21, 22, 23, 24, 25, 2, 1, 6), 'M_FBXMT_Floor'),
-    ((3, 2, 25, 26), 'M_FBXMT_Wall'),
-    ((3, 26, 27, 4), 'M_FBXMT_Floor'),
-    ((7, 5, 4, 28), 'M_FBXMT_Chain_01'),
-    ((29, 8, 7, 28), 'M_FBXMT_Ceiling'),
-    ((9, 8, 29, 30), 'M_FBXMT_Chain_02'),
-    ((9, 30, 31, 10), 'M_FBXMT_Floor'),
-    ((11, 10, 31, 32), 'M_FBXMT_Chain_03'),
-    ((33, 12, 11, 32), 'M_FBXMT_Ceiling'),
-    ((13, 12, 33, 34), 'M_FBXMT_Chain_04'),
-    ((13, 34, 35, 14), 'M_FBXMT_Floor'),
-    ((15, 14, 35, 36), 'M_FBXMT_Chain_05'),
-    ((37, 16, 15, 36), 'M_FBXMT_Ceiling'),
-    ((17, 16, 37, 38), 'M_FBXMT_Wall'),
-    ((18, 17, 38, 39, 40, 41, 42, 43, 44, 45), 'M_FBXMT_Ceiling'),
-    ((46, 20, 19, 47), 'M_FBXMT_Wall'),
-    ((48, 21, 20, 46), 'M_FBXMT_Wall'),
-    ((49, 22, 21, 48), 'M_FBXMT_Wall'),
-    ((50, 23, 22, 49), 'M_FBXMT_Wall'),
-    ((51, 24, 23, 50), 'M_FBXMT_Wall'),
-    ((26, 25, 24, 51), 'M_FBXMT_Wall'),
-    ((26, 51, 52, 27), 'M_FBXMT_Floor'),
-    ((28, 4, 27, 53), 'M_FBXMT_Chain_01'),
-    ((54, 29, 28, 53), 'M_FBXMT_Ceiling'),
-    ((30, 29, 54, 55), 'M_FBXMT_Chain_02'),
-    ((30, 55, 56, 31), 'M_FBXMT_Floor'),
-    ((32, 31, 56, 57), 'M_FBXMT_Chain_03'),
-    ((58, 33, 32, 57), 'M_FBXMT_Ceiling'),
-    ((34, 33, 58, 59), 'M_FBXMT_Chain_04'),
-    ((34, 59, 60, 35), 'M_FBXMT_Floor'),
-    ((36, 35, 60, 61), 'M_FBXMT_Chain_05'),
-    ((62, 37, 36, 61), 'M_FBXMT_Ceiling'),
-    ((38, 37, 62, 39), 'M_FBXMT_Wall'),
-    ((39, 62, 63, 40), 'M_FBXMT_Wall'),
-    ((40, 63, 64, 41), 'M_FBXMT_Wall'),
-    ((41, 64, 65, 42), 'M_FBXMT_Wall'),
-    ((42, 65, 66, 43), 'M_FBXMT_Wall'),
-    ((43, 66, 67, 44), 'M_FBXMT_Wall'),
-    ((44, 67, 68, 45), 'M_FBXMT_Wall'),
-    ((46, 47, 69, 70), 'M_FBXMT_Floor'),
-    ((48, 46, 70, 71), 'M_FBXMT_Floor'),
-    ((49, 48, 71, 72), 'M_FBXMT_Floor'),
-    ((50, 49, 72, 73), 'M_FBXMT_Floor'),
-    ((51, 50, 73, 52), 'M_FBXMT_Floor'),
-    ((53, 27, 52, 74), 'M_FBXMT_Chain_01'),
-    ((75, 54, 53, 74), 'M_FBXMT_Ceiling'),
-    ((55, 54, 75, 76), 'M_FBXMT_Chain_02'),
-    ((55, 76, 77, 56), 'M_FBXMT_Floor'),
-    ((57, 56, 77, 78), 'M_FBXMT_Chain_03'),
-    ((79, 58, 57, 78), 'M_FBXMT_Ceiling'),
-    ((59, 58, 79, 80), 'M_FBXMT_Chain_04'),
-    ((59, 80, 81, 60), 'M_FBXMT_Floor'),
-    ((61, 60, 81, 82), 'M_FBXMT_Chain_05'),
-    ((63, 62, 61, 82), 'M_FBXMT_Ceiling'),
-    ((64, 63, 82, 83), 'M_FBXMT_Ceiling'),
-    ((65, 64, 83, 84), 'M_FBXMT_Ceiling'),
-    ((66, 65, 84, 85), 'M_FBXMT_Ceiling'),
-    ((67, 66, 85, 86), 'M_FBXMT_Ceiling'),
-    ((68, 67, 86, 87), 'M_FBXMT_Ceiling'),
-    ((88, 70, 69, 89), 'M_FBXMT_Chain_01'),
-    ((90, 71, 70, 88), 'M_FBXMT_Chain_01'),
-    ((91, 72, 71, 90), 'M_FBXMT_Chain_01'),
-    ((92, 73, 72, 91), 'M_FBXMT_Chain_01'),
-    ((74, 52, 73, 92), 'M_FBXMT_Chain_01'),
-    ((93, 75, 74, 92), 'M_FBXMT_Ceiling'),
-    ((76, 75, 93, 94), 'M_FBXMT_Chain_02'),
-    ((76, 94, 95, 77), 'M_FBXMT_Floor'),
-    ((78, 77, 95, 96), 'M_FBXMT_Chain_03'),
-    ((97, 79, 78, 96), 'M_FBXMT_Ceiling'),
-    ((80, 79, 97, 98), 'M_FBXMT_Chain_04'),
-    ((80, 98, 99, 81), 'M_FBXMT_Floor'),
-    ((82, 81, 99, 83), 'M_FBXMT_Chain_05'),
-    ((83, 99, 100, 84), 'M_FBXMT_Chain_05'),
-    ((84, 100, 101, 85), 'M_FBXMT_Chain_05'),
-    ((85, 101, 102, 86), 'M_FBXMT_Chain_05'),
-    ((86, 102, 103, 87), 'M_FBXMT_Chain_05'),
-    ((104, 105, 88, 89), 'M_FBXMT_Ceiling'),
-    ((105, 106, 90, 88), 'M_FBXMT_Ceiling'),
-    ((106, 107, 91, 90), 'M_FBXMT_Ceiling'),
-    ((107, 93, 92, 91), 'M_FBXMT_Ceiling'),
-    ((94, 93, 107, 108), 'M_FBXMT_Chain_02'),
-    ((94, 108, 109, 95), 'M_FBXMT_Floor'),
-    ((96, 95, 109, 110), 'M_FBXMT_Chain_03'),
-    ((111, 97, 96, 110), 'M_FBXMT_Ceiling'),
-    ((98, 97, 111, 112), 'M_FBXMT_Chain_04'),
-    ((98, 112, 100, 99), 'M_FBXMT_Floor'),
-    ((112, 113, 101, 100), 'M_FBXMT_Floor'),
-    ((113, 114, 102, 101), 'M_FBXMT_Floor'),
-    ((114, 115, 103, 102), 'M_FBXMT_Floor'),
-    ((116, 105, 104, 117), 'M_FBXMT_Chain_02'),
-    ((118, 106, 105, 116), 'M_FBXMT_Chain_02'),
-    ((108, 107, 106, 118), 'M_FBXMT_Chain_02'),
-    ((108, 118, 119, 109), 'M_FBXMT_Floor'),
-    ((110, 109, 119, 120), 'M_FBXMT_Chain_03'),
-    ((121, 111, 110, 120), 'M_FBXMT_Ceiling'),
-    ((112, 111, 121, 113), 'M_FBXMT_Chain_04'),
-    ((113, 121, 122, 114), 'M_FBXMT_Chain_04'),
-    ((114, 122, 123, 115), 'M_FBXMT_Chain_04'),
-    ((116, 117, 124, 125), 'M_FBXMT_Floor'),
-    ((118, 116, 125, 119), 'M_FBXMT_Floor'),
-    ((120, 119, 125, 126), 'M_FBXMT_Chain_03'),
-    ((122, 121, 120, 126), 'M_FBXMT_Ceiling'),
-    ((123, 122, 126, 127), 'M_FBXMT_Ceiling'),
-    ((126, 125, 124, 127), 'M_FBXMT_Chain_03'),
-    ((18, 45, 68, 87, 103, 115, 123, 127, 124, 117, 104, 89, 69, 47, 19, 6), 'M_FBXMT_Wall'),
-]
-
-# Camera data: (location_xyz, rotation_euler_xyz) from staged blend.
-# Mesh data: (location_xyz, scale_uniform) matching staged scene.
-# Island Chains camera/mesh X+50 offset removed — both placed at origin in preview scene.
-_PREVIEW_GEO_TRIM_CAMERA        = ((0.0,  25.0, 6.0),  None)   # None = compute look-at to mesh centre
-_PREVIEW_GEO_TRIM_MESH          = ((0.0,  0.2,  1.0),   2.0, 0.7854)
-_PREVIEW_ISLAND_CHAINS_CAMERA   = ((0.0, -25.0, 7.0),  (1.5770, -0.00935, 0.01335))
-_PREVIEW_ISLAND_CHAINS_MESH     = ((0.0,  0.0,  7.5),  10.0, 0.7854)
 
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -543,14 +150,15 @@ def _compute_cache_hash(scene) -> str:
         str(round(prefs.corner_hue_shift, 2)),
         str(prefs.bake_labels),
     ]
-    # All colour values (island covered by wall A/B which drives it)
-    for prop_a, prop_b in _MAT_COLOR_PROPS:
+    # All A colour values — B is always derived, so only A affects the hash
+    for prop_a in _MAT_COLOR_PROPS_A:
         ca = getattr(prefs, prop_a, None)
-        cb = getattr(prefs, prop_b, None)
         if ca:
             parts.append(','.join(f'{v:.4f}' for v in ca))
-        if cb:
-            parts.append(','.join(f'{v:.4f}' for v in cb))
+    # B derivation settings also affect output
+    parts.append(getattr(prefs, 'color_b_hue_offset', '0'))
+    parts.append(getattr(prefs, 'color_b_saturation', '0.6'))
+    parts.append(getattr(prefs, 'color_b_value', '0.35'))
     raw = '|'.join(parts)
     return hashlib.md5(raw.encode()).hexdigest()[:12]
 
@@ -585,162 +193,6 @@ def copy_cache_to_textures(scene, tex_dir: str):
         if src and os.path.exists(src):
             shutil.copy2(src, os.path.join(tex_dir, mat_name + '.png'))
 
-
-def _build_preview_mesh(verts_data, faces_data, scene_name: str):
-    """Build a preview mesh object in a dedicated scene from hardcoded data.
-    Assigns FBXMT materials to faces by name. Returns (preview_scene, obj).
-    Caller is responsible for removing the scene when done.
-    """
-    # Remove any leftover preview scene
-    prev_scene = bpy.data.scenes.get(scene_name)
-    if prev_scene:
-        bpy.data.scenes.remove(prev_scene, do_unlink=True)
-    prev_scene = bpy.data.scenes.new(scene_name)
-
-    # Build material slot list from ALL_DISPLAY_MATERIAL_NAMES so slot indices
-    # are stable and predictable — same order every time regardless of face order.
-    # Only include materials that actually appear in this mesh's faces.
-    used_mat_names = set(mat_name for _, mat_name in faces_data)
-    # Keep canonical order from ALL_DISPLAY_MATERIAL_NAMES
-    mat_names_ordered = [n for n in ALL_DISPLAY_MATERIAL_NAMES if n in used_mat_names]
-    mat_index_map = {n: i for i, n in enumerate(mat_names_ordered)}
-
-    # Build mesh via bmesh
-    me = bpy.data.meshes.new(scene_name + '_mesh')
-    bm = bmesh.new()
-
-    bm_verts = [bm.verts.new(v) for v in verts_data]
-    bm.verts.ensure_lookup_table()
-
-    for vert_indices, mat_name in faces_data:
-        try:
-            face_verts = [bm_verts[i] for i in vert_indices]
-            f = bm.faces.new(face_verts)
-            f.material_index = mat_index_map[mat_name]
-        except Exception:
-            pass  # skip degenerate faces
-
-    bm.to_mesh(me)
-    bm.free()
-
-    # Append materials in the same canonical order used for mat_index_map
-    for i, mat_name in enumerate(mat_names_ordered):
-        mat = bpy.data.materials.get(mat_name)
-        if mat:
-            me.materials.append(mat)
-        else:
-            placeholder = bpy.data.materials.new(name='__fbxmt_placeholder_' + mat_name)
-            me.materials.append(placeholder)
-
-    # Create object and link to preview scene
-    obj = bpy.data.objects.new(scene_name + '_obj', me)
-    prev_scene.collection.objects.link(obj)
-
-    # Unwrap using the toolkit's own unwrapper so UVs match the checker scale.
-    # Temporarily remap Ignore faces to Wall so they get valid UVs in the preview
-    # (unwrap_mesh zeroes Ignore faces, which renders black).
-    import math
-    ignore_slot = next((i for i, m in enumerate(me.materials) if m and m.name == 'M_FBXMT_Ignore'), None)
-    wall_slot   = next((i for i, m in enumerate(me.materials) if m and m.name == 'M_FBXMT_Wall'), None)
-    if ignore_slot is not None and wall_slot is not None:
-        bm_tmp = bmesh.new()
-        bm_tmp.from_mesh(me)
-        for face in bm_tmp.faces:
-            if face.material_index == ignore_slot:
-                face.material_index = wall_slot
-        bm_tmp.to_mesh(me)
-        bm_tmp.free()
-
-    unwrap_mesh(me, obj.matrix_world, math.cos(math.radians(45.0)))
-
-    # Restore Ignore material slot assignments after unwrap
-    if ignore_slot is not None and wall_slot is not None:
-        bm_tmp = bmesh.new()
-        bm_tmp.from_mesh(me)
-        # Identify which faces were originally Ignore by checking the face data
-        # from the original faces_data — restore by position
-        ignore_face_indices = {
-            i for i, (_, mat_name) in enumerate(faces_data)
-            if mat_name == 'M_FBXMT_Ignore'
-        }
-        for i, face in enumerate(bm_tmp.faces):
-            if i in ignore_face_indices:
-                face.material_index = ignore_slot
-        bm_tmp.to_mesh(me)
-        bm_tmp.free()
-
-    return prev_scene, obj
-
-
-def _setup_preview_camera(prev_scene, cam_loc, cam_rot_euler, look_at=None):
-    """Add a camera. If cam_rot_euler is None, compute rotation from look_at point."""
-    cam_data = bpy.data.cameras.new('__fbxmt_preview_cam')
-    cam_data.type = 'PERSP'
-    cam_data.lens = 50.0
-    cam_obj = bpy.data.objects.new('__fbxmt_preview_cam', cam_data)
-    prev_scene.collection.objects.link(cam_obj)
-
-    cam_obj.location = Vector(cam_loc)
-
-    if cam_rot_euler is None and look_at is not None:
-        direction = Vector(look_at) - Vector(cam_loc)
-        cam_obj.rotation_euler = direction.to_track_quat('-Z', 'Y').to_euler()
-    else:
-        cam_obj.rotation_euler = cam_rot_euler
-
-    prev_scene.camera = cam_obj
-    return cam_obj
-
-
-def _render_preview(prev_scene, img_name: str, size: int):
-    """Render prev_scene to a bpy.data.images entry. Returns the image or None."""
-    prev_scene.render.engine            = 'BLENDER_EEVEE_NEXT'
-    prev_scene.render.resolution_x     = size
-    prev_scene.render.resolution_y     = size
-    prev_scene.render.resolution_percentage = 100
-    prev_scene.render.film_transparent = True
-    prev_scene.render.image_settings.file_format = 'PNG'
-
-    # World — plain grey so materials stand out
-    if not prev_scene.world:
-        prev_scene.world = bpy.data.worlds.new('__fbxmt_preview_world')
-    prev_scene.world.use_nodes = True
-    bg = prev_scene.world.node_tree.nodes.get('Background')
-    if bg:
-        bg.inputs['Color'].default_value    = (0.15, 0.15, 0.15, 1.0)
-        bg.inputs['Strength'].default_value = 1.0
-
-    tmp_path = os.path.join(tempfile.gettempdir(), f'{img_name}.png')
-    prev_scene.render.filepath = tmp_path
-
-    # Render into the temp file
-    override = {'scene': prev_scene}
-    try:
-        with bpy.context.temp_override(**override):
-            bpy.ops.render.render(write_still=True, scene=prev_scene.name)
-    except Exception as e:
-        print(f'[FBXMT] Preview render failed: {e}')
-        return None
-
-    if not os.path.exists(tmp_path):
-        return None
-
-    # Load result into bpy.data.images
-    existing = bpy.data.images.get(img_name)
-    if existing:
-        bpy.data.images.remove(existing)
-    img = bpy.data.images.load(tmp_path)
-    img.name = img_name
-    img.pack()
-    try:
-        os.remove(tmp_path)
-    except Exception:
-        pass
-
-    return img
-
-
-# ─── Material bake ───────────────────────────────────────────────────────────
 
 def _get_tex_dir(scene):
     """Returns normalised export_folder/Textures path, or None if export folder not set."""
@@ -813,76 +265,6 @@ class FBXMT_OT_ProjectSetup_SetCheckerScale(Operator):
 
 
 # ─── Operator: render preview ─────────────────────────────────────────────────
-
-class FBXMT_OT_ProjectSetup_Preview(Operator):
-    bl_idname  = 'fbxmt.project_setup_preview'
-    bl_label   = 'Render Material Preview'
-    bl_options = {'INTERNAL'}
-
-    def execute(self, context):
-        props    = context.scene.fbxmt_props
-        idx      = props.fbxmt_selected_mat_index
-        mat_name = ALL_DISPLAY_MATERIAL_NAMES[idx]
-
-        ensure_fbxmt_materials()
-
-        rebuild_fbxmt_materials()
-
-        # Choose mesh based on material type
-        is_chain = mat_name.startswith('M_FBXMT_Chain_')
-        if is_chain:
-            verts_data  = _PREVIEW_ISLAND_CHAINS_VERTS
-            faces_data  = _PREVIEW_ISLAND_CHAINS_FACES
-            cam_data    = _PREVIEW_ISLAND_CHAINS_CAMERA
-            mesh_data   = _PREVIEW_ISLAND_CHAINS_MESH
-        else:
-            verts_data  = _PREVIEW_GEO_TRIM_VERTS
-            faces_data  = _PREVIEW_GEO_TRIM_FACES
-            cam_data    = _PREVIEW_GEO_TRIM_CAMERA
-            mesh_data   = _PREVIEW_GEO_TRIM_MESH
-
-        scene_name = '__fbxmt_preview_scene'
-        img_name   = '__fbxmt_preview'
-
-        try:
-            prev_scene, _obj = _build_preview_mesh(verts_data, faces_data, scene_name)
-            # Apply scale, location offset and Z rotation matching the staged preview scene
-            _obj.location        = mesh_data[0]
-            s                    = mesh_data[1]
-            _obj.scale           = (s, s, s)
-            _obj.rotation_euler  = (0.0, 0.0, mesh_data[2])
-            mesh_centre = (_obj.location[0], _obj.location[1], _obj.location[2])
-            _setup_preview_camera(prev_scene, cam_data[0], cam_data[1], look_at=mesh_centre)
-            img = _render_preview(prev_scene, img_name, PREVIEW_SIZE)
-        finally:
-            # Always clean up the temporary scene
-            ps = bpy.data.scenes.get(scene_name)
-            if ps:
-                # Remove orphaned camera/lamp datablocks
-                for obj in list(ps.collection.objects):
-                    data = obj.data
-                    ps.collection.objects.unlink(obj)
-                    bpy.data.objects.remove(obj, do_unlink=True)
-                    if data and data.users == 0:
-                        if isinstance(data, bpy.types.Mesh):
-                            bpy.data.meshes.remove(data)
-                        elif isinstance(data, bpy.types.Camera):
-                            bpy.data.cameras.remove(data)
-                        elif isinstance(data, bpy.types.Light):
-                            pass  # no lights in preview scene
-                bpy.data.scenes.remove(ps, do_unlink=True)
-
-        if img is None:
-            self.report({'WARNING'}, 'Preview render failed — check system console')
-            return {'CANCELLED'}
-
-        props.fbxmt_preview_stale = False
-        context.scene.fbxmt_preview_mode = 'MODEL'  # switch display to model render
-        return {'FINISHED'}
-
-
-
-# ─── Operator: contact sheet ──────────────────────────────────────────────────
 
 class FBXMT_OT_ProjectSetup_TilingTest(Operator):
     """Render a 3×3 tiling test sheet of the Ignore material — no labels.
@@ -1024,12 +406,14 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
             # ISLAND_SUB_NAMES interleaves Wall/Floor/Ceil per row:
             # Wall_01, Floor_01, Ceil_01, Wall_02, Floor_02, Ceil_02 ...
             # Extract each column's tiles for correct 3-col grid placement
-            from .materials import ISLAND_SUB_NAMES as _ISN
+            from .materials import ISLAND_SUB_NAMES as _ISN, RAMP_ISLAND_NAMES as _RIN
             wall_islands  = [_ISN[i] for i in range(0,  15, 3)]   # indices 0,3,6,9,12
             floor_islands = [_ISN[i] for i in range(1,  15, 3)]   # indices 1,4,7,10,13
             ceil_islands  = [_ISN[i] for i in range(2,  15, 3)]   # indices 2,5,8,11,14
             for w, f, c in zip(wall_islands, floor_islands, ceil_islands):
                 mat_names.extend([w, f, c])
+            # Ramp islands — 3 slots, pad to full row of 3
+            mat_names.extend(_RIN + [''] * (3 - len(_RIN) % 3) if len(_RIN) % 3 else _RIN)
         else:
             mat_names = list(ALL_DISPLAY_MATERIAL_NAMES)
 
@@ -1115,8 +499,8 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
                                     if 0 <= px < img_w and 0 <= py < img_h:
                                         arr[py, px, :] = 1.0
 
-            _COL_LABELS = {0: 'WALL', 1: 'FLOOR', 2: 'CEIL'}
-            _ISLAND_START_IDX = 6
+            _COL_LABELS = {0: 'WALL', 1: 'FLOOR', 2: 'CEIL', 3: 'RAMP'}
+            _ISLAND_START_IDX = len(ALL_DISPLAY_MATERIAL_NAMES)
 
             for idx, (mat_name, _img) in enumerate(imgs):
                 col  = idx % cols
@@ -1128,7 +512,7 @@ class FBXMT_OT_ProjectSetup_ContactSheet(Operator):
                     prefix = _COL_LABELS.get(col, 'ISL')
                     label  = f'{prefix}{format(island_row, "X")}'
                 else:
-                    label = mat_name.replace('M_FBXMT_', '').replace('_', ' ')[:12]
+                    label = _MAT_DISPLAY_NAMES.get(mat_name, mat_name.replace('M_FBXMT_', '').replace('_', ' '))[:12]
                 scale = max(1, cell // 128)
                 cx    = x0 + 4
                 cy    = y0 + cell - 4
@@ -1233,13 +617,14 @@ class FBXMT_OT_ProjectSetup_ContactSheet_Disk(Operator):
 
         # Build material list
         if full:
-            from .materials import ISLAND_SUB_NAMES as _ISN
+            from .materials import ISLAND_SUB_NAMES as _ISN, RAMP_ISLAND_NAMES as _RIN
             mat_names = list(ALL_DISPLAY_MATERIAL_NAMES)
             wall_islands  = [_ISN[i] for i in range(0,  15, 3)]
             floor_islands = [_ISN[i] for i in range(1,  15, 3)]
             ceil_islands  = [_ISN[i] for i in range(2,  15, 3)]
             for w, f, c in zip(wall_islands, floor_islands, ceil_islands):
                 mat_names.extend([w, f, c])
+            mat_names.extend(_RIN + [''] * (3 - len(_RIN) % 3) if len(_RIN) % 3 else _RIN)
         else:
             mat_names = list(ALL_DISPLAY_MATERIAL_NAMES)
 
@@ -1339,15 +724,17 @@ class FBXMT_MT_ContactSheet_Dropdown(bpy.types.Menu):
 _DEFAULT_PRESET = {
     "format": "full",
     "derivation": {
-        "anchor_hue":               "0.0833",
-        "anchor_saturation":        "0.5",
-        "anchor_value":             "0.5",
-        "color_b_mode":             "DARKER",
-        "color_b_notch":            1,
-        "island_marker_saturation": "0.5",
-        "island_marker_value":      "0.5",
-        "island_marker_b_mode":     "DARKER",
-        "island_marker_b_notch":    1,
+        "anchor_hue":                    "0.0833",
+        "anchor_saturation":             "0.6",
+        "anchor_value":                  "0.50",
+        "color_b_hue_offset":            "0",
+        "color_b_saturation":            "0.6",
+        "color_b_value":                 "0.35",
+        "island_marker_saturation":      "0.6",
+        "island_marker_value":           "0.50",
+        "island_marker_b_hue_offset":    "0",
+        "island_marker_b_saturation":    "0.6",
+        "island_marker_b_value":         "0.35",
         "checker_scale":            8,
         "corner_mark_preset":       2,
         "show_corner_circle":       False,
@@ -1362,16 +749,13 @@ _DEFAULT_PRESET = {
         "apex_line_seed":           42,
     },
     "colours": {
-        "color_floor_a":   [0.25,   0.75,   0.4999, 1.0],
-        "color_ceiling_a": [0.4999, 0.25,   0.75,   1.0],
-        "color_wall_a":    [0.75,   0.4999, 0.25,   1.0],
-        "color_trim_a":    [0.7499, 0.25,   0.75,   1.0],
-        "color_ignore_a":  [0.25,   0.25,   0.25,   1.0],
-        "color_floor_b":   [0.15,   0.45,   0.2999, 1.0],
-        "color_ceiling_b": [0.2999, 0.15,   0.45,   1.0],
-        "color_wall_b":    [0.45,   0.2999, 0.15,   1.0],
-        "color_trim_b":    [0.4499, 0.15,   0.45,   1.0],
-        "color_ignore_b":  [0.75,   0.75,   0.75,   1.0],
+        "color_floor_a":        [0.25,   0.75,   0.4999, 1.0],
+        "color_ceiling_a":      [0.4999, 0.25,   0.75,   1.0],
+        "color_wall_a":         [0.75,   0.4999, 0.25,   1.0],
+        "color_trim_a":         [0.7499, 0.25,   0.75,   1.0],
+        "color_ignore_a":       [0.25,   0.25,   0.25,   1.0],
+        "color_ramp_floor_a":   [0.6,    0.7,    0.25,   1.0],
+        "color_ramp_ceiling_a": [0.45,   0.65,   0.75,   1.0],
     },
     "__name__": "FBXMT_default",
 }
@@ -1380,37 +764,41 @@ _PRESET_DERIVATION_PROPS = [
     'anchor_hue',
     'anchor_saturation',
     'anchor_value',
-    'color_b_mode',
-    'color_b_notch',
+    'color_b_hue_offset',
+    'color_b_saturation',
+    'color_b_value',
     'island_marker_saturation',
     'island_marker_value',
-    'island_marker_b_mode',
-    'island_marker_b_notch',
+    'island_marker_b_hue_offset',
+    'island_marker_b_saturation',
+    'island_marker_b_value',
     'checker_scale',
     'corner_mark_preset',
     'show_corner_circle',
     'show_corner_lines',
     'bake_labels',
-    *[f'checker_pattern_{s}' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island')],
+    *[f'checker_pattern_{s}' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island', 'ramp_floor', 'ramp_ceiling')],
     'apex_line_seed',
 ]
 
 # Full colour stack — stored in addition to derivation props in every preset
 # Island colour excluded — always derived from wall A at build time
 _PRESET_COLOUR_PROPS = [
-    *[f'color_{s}_a' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore')],
-    *[f'color_{s}_b' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore')],
+    *[f'color_{s}_a' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'ramp_floor', 'ramp_ceiling')],
+    # color_{s}_b removed — B is always derived, never stored
 ]
 
-# Swatch material order and labels — matches tile grid top-left → bottom-right
+# Swatch material order and labels.
+# B is derived at draw time via _resolve_color_b — prop_b column removed.
 _SWATCH_MATS = [
-    ('wall',    'color_wall_a',    'color_wall_b',    'Wall'),
-    ('floor',   'color_floor_a',   'color_floor_b',   'Floor'),
-    ('ceiling', 'color_ceiling_a', 'color_ceiling_b', 'Ceiling'),
-    ('trim',    'color_trim_a',    'color_trim_b',    'Trim'),
-    ('ignore',  'color_ignore_a',  'color_ignore_b',  'Ignore'),
-    # Island colour derives from Wall A at build time — show wall colours in swatch
-    ('island',  'color_wall_a',    'color_wall_b',    'Island*'),
+    ('wall',         'color_wall_a',         'Wall'),
+    ('ramp_floor',   'color_ramp_floor_a',   'Ramp Fl'),
+    ('floor',        'color_floor_a',        'Floor'),
+    ('ramp_ceiling', 'color_ramp_ceiling_a', 'Ramp Cl'),
+    ('ceiling',      'color_ceiling_a',      'Ceiling'),
+    ('trim',         'color_trim_a',         'Trim'),
+    ('ignore',       'color_ignore_a',       'Ignore'),
+    ('island',       'color_wall_a',         'Island*'),
 ]
 
 _SWATCH_SQ   = 16   # pixels per colour square
@@ -1434,12 +822,17 @@ def _build_swatch_image(prefs, name):
     px[:, :, 3] = 1.0  # fully opaque background (dark grey)
     px[:, :, :3] = 0.15
 
-    for row_idx, (_, prop_a, prop_b, label) in enumerate(_SWATCH_MATS):
+    from .materials import _resolve_color_b as _rcb
+    _b_off = getattr(prefs, 'color_b_hue_offset', '0')
+    _b_sat = _safe_float(prefs, 'color_b_saturation', 0.6)
+    _b_val = _safe_float(prefs, 'color_b_value', 0.35)
+
+    for row_idx, (_, prop_a, label) in enumerate(_SWATCH_MATS):
         y0 = h - (row_idx + 1) * _SWATCH_ROW   # top-down order
         y1 = y0 + _SWATCH_ROW
 
         col_a = tuple(getattr(prefs, prop_a, (0.5, 0.5, 0.5, 1.0))[:3])
-        col_b = tuple(getattr(prefs, prop_b, (0.3, 0.3, 0.3, 1.0))[:3])
+        col_b = _rcb(col_a, _b_off, _b_sat, _b_val)
 
         # A square
         ax0 = _SWATCH_LABEL_W
@@ -1780,28 +1173,8 @@ class OT_FBXMT_ApplyBToAll(Operator):
     source_slot: bpy.props.StringProperty(options={'HIDDEN'})
 
     def execute(self, context):
-        prefs = context.scene.fbxmt_prefs_global
-        slots = ['floor', 'ceiling', 'wall', 'trim', 'ignore', 'island']
-        src   = self.source_slot
-        if src not in slots:
-            return {'CANCELLED'}
-        mode   = getattr(prefs, f'color_b_mode_{src}')
-        darker = getattr(prefs, f'color_b_darker_{src}')
-        grey   = getattr(prefs, f'color_b_grey_{src}')
-        col_b  = tuple(getattr(prefs, f'color_{src}_b'))
-        for slot in slots:
-            if slot == src:
-                continue
-            setattr(prefs, f'color_b_mode_{slot}',   mode)
-            setattr(prefs, f'color_b_darker_{slot}',  darker)
-            setattr(prefs, f'color_b_grey_{slot}',    grey)
-            try:
-                setattr(prefs, f'color_{slot}_b', col_b)
-            except Exception:
-                pass
-        context.scene.fbxmt_props.fbxmt_preview_stale = True
-        _render_dialog_tiles_sync(context)
-        self.report({'INFO'}, 'Colour B applied to all materials')
+        # B is now globally derived — no per-slot spreading needed.
+        # Operator retained to avoid unregistered bl_idname errors from saved blend files.
         return {'FINISHED'}
 
 
@@ -1852,12 +1225,14 @@ _MATERIAL_SNAPSHOT_PROPS = [
     'anchor_hue',
     'anchor_saturation',
     'anchor_value',
-    'color_b_mode',
-    'color_b_notch',
+    'color_b_hue_offset',
+    'color_b_saturation',
+    'color_b_value',
     'island_marker_saturation',
     'island_marker_value',
-    'island_marker_b_mode',
-    'island_marker_b_notch',
+    'island_marker_b_hue_offset',
+    'island_marker_b_saturation',
+    'island_marker_b_value',
     'checker_scale',
     'corner_mark_preset',
     'corner_mark_width_px',
@@ -1866,9 +1241,9 @@ _MATERIAL_SNAPSHOT_PROPS = [
     'apex_line_seed',
     'preset_locked',
     'active_preset_name',
-    *[f'color_{s}_a'         for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore')],
-    *[f'color_{s}_b'         for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore')],
-    *[f'checker_pattern_{s}' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island')],
+    *[f'color_{s}_a'         for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'ramp_floor', 'ramp_ceiling')],
+    *[f'color_{s}_b'         for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'ramp_floor', 'ramp_ceiling')],
+    *[f'checker_pattern_{s}' for s in ('floor', 'ceiling', 'wall', 'trim', 'ignore', 'island', 'ramp_floor', 'ramp_ceiling')],
 ]
 
 
@@ -1963,25 +1338,25 @@ class FBXMT_OT_ProjectSetup(Operator):
             layout.label(text='Scene properties unavailable', icon='ERROR')
             return
 
-        # ── Tile grid — Wall, Floor, Ceiling first row; Trim, Ignore, Island second ──
-        _DISPLAY_ORDER = [
-            'M_FBXMT_Wall', 'M_FBXMT_Floor', 'M_FBXMT_Ceiling',
-            'M_FBXMT_Trim', 'M_FBXMT_Ignore', 'M_FBXMT_Island_Wall_03',
+        # ── Tile grid — 4 columns, 2 rows ────────────────────────────────────
+        _PANEL_TILES = [
+            'M_FBXMT_Wall',         'M_FBXMT_Floor',      'M_FBXMT_Ceiling',     'M_FBXMT_Ignore',
+            'M_FBXMT_Island',       'M_FBXMT_Ramp_Floor', 'M_FBXMT_Ramp_Ceiling','M_FBXMT_Trim',
         ]
         box = layout.box()
-        for row_names in (_DISPLAY_ORDER[:3], _DISPLAY_ORDER[3:]):
+        for row_start in range(0, len(_PANEL_TILES), 4):
+            row_names = _PANEL_TILES[row_start:row_start + 4]
             tile_row = box.row(align=True)
             for mn in row_names:
                 col = tile_row.column()
                 img = bpy.data.images.get(f'__tile_{mn}')
                 if img:
                     img.preview_ensure()
-                    col.template_icon(icon_value=img.preview.icon_id, scale=8.0)
+                    col.template_icon(icon_value=img.preview.icon_id, scale=5.0)
                 else:
                     sub = col.box()
                     sub.scale_y = 3.5
                     sub.label(text='')
-                # Centred label — split 50/50 so label sits under tile centre
                 lbl_row = col.row()
                 lbl_row.split(factor=0.5)
                 lbl_row.alignment = 'CENTER'
@@ -2016,6 +1391,7 @@ class FBXMT_OT_ProjectSetup(Operator):
             op.size = sz
         if props.contact_sheet_size > 2048:
             row = body.row()
+            row.alert = False
             row.label(text='Use "To Disk" for sizes above 2048px', icon='INFO')
 
         body.separator(factor=0.5)
@@ -2033,27 +1409,43 @@ class FBXMT_OT_ProjectSetup(Operator):
 
             split    = body.split(factor=0.5)
             col_left  = split.box()
-            col_right = split.box()
+            col_right = split.column()
+            checker_box = col_right.box()
 
             # ── LEFT: Anchor + Colour B + Island Marker ───────────────────────
             col_left.separator(factor=0.5)
             col_left.label(text='Material Settings', icon='SHADING_RENDERED')
             col_left.separator(factor=0.5)
 
-            _draw_preset_lock_ticker(col_left, prefs)
-            col_left.separator(factor=0.5)
-
             locked = prefs.preset_locked
 
-            col_left.label(text='Anchor Colour:')
-            hsv_row = col_left.row(align=False)
-            hsv_row.enabled = not locked
-            for prop, lbl in (('anchor_hue', 'Hue'), ('anchor_saturation', 'Sat'), ('anchor_value', 'Val')):
-                sp = hsv_row.split(factor=0.35, align=False)
-                sp.label(text=lbl)
-                sp.prop(prefs, prop, text='')
+            # Anchor Colour A
+            col_left.label(text='Anchor Colour — A:')
+            a_row = col_left.row(align=False)
+            a_row.enabled = not locked
+            a_row.separator()
+            a_row.prop(prefs, 'anchor_hue',        text="H")
+            a_row.separator(factor=0.5)
+            a_row.prop(prefs, 'anchor_saturation', text="S")
+            a_row.separator(factor=0.5)
+            a_row.prop(prefs, 'anchor_value',      text="V")
+            a_row.separator()
             col_left.separator(factor=0.5)
 
+            # Colour B
+            col_left.label(text='Anchor Colour — B:')
+            b_row = col_left.row(align=False)
+            b_row.enabled = not locked
+            b_row.separator()
+            b_row.prop(prefs, 'color_b_hue_offset', text="H+")
+            b_row.separator(factor=0.5)
+            b_row.prop(prefs, 'color_b_saturation', text="S")
+            b_row.separator(factor=0.5)
+            b_row.prop(prefs, 'color_b_value',      text="V")
+            b_row.separator()
+            col_left.separator(factor=0.5)
+
+            # Swatch row 1 — Wall / Floor / Ceiling (A + B each)
             swatch_row = col_left.row(align=True)
             for mat_label, a_img_name in (
                 ('W', '__fbxmt_swatch_wall'),
@@ -2065,63 +1457,89 @@ class FBXMT_OT_ProjectSetup(Operator):
                 img_b = bpy.data.images.get(b_img_name)
                 if img_a:
                     img_a.preview_ensure()
-                    swatch_row.template_icon(icon_value=img_a.preview.icon_id, scale=2.5)
+                    swatch_row.template_icon(icon_value=img_a.preview.icon_id, scale=1.875)
                 else:
                     swatch_row.label(text=mat_label + 'A')
                 if img_b:
                     img_b.preview_ensure()
-                    swatch_row.template_icon(icon_value=img_b.preview.icon_id, scale=2.5)
+                    swatch_row.template_icon(icon_value=img_b.preview.icon_id, scale=1.875)
                 else:
                     swatch_row.label(text=mat_label + 'B')
+
+            # Swatch row 2 — Island / Ramp Floor / Ramp Ceiling (A + B each)
+            # Island replaces the old transparent spacers — tracks Wall so colours match
+            ramp_swatch_row = col_left.row(align=True)
+            for mat_label, a_img_name in (
+                ('I',  '__fbxmt_swatch_wall'),
+                ('RF', '__fbxmt_swatch_ramp_floor'),
+                ('RC', '__fbxmt_swatch_ramp_ceiling'),
+            ):
+                b_img_name = a_img_name.replace('_swatch_', '_swatch_b_')
+                img_a = bpy.data.images.get(a_img_name)
+                img_b = bpy.data.images.get(b_img_name)
+                if img_a:
+                    img_a.preview_ensure()
+                    ramp_swatch_row.template_icon(icon_value=img_a.preview.icon_id, scale=1.875)
+                else:
+                    ramp_swatch_row.label(text=mat_label + 'A')
+                if img_b:
+                    img_b.preview_ensure()
+                    ramp_swatch_row.template_icon(icon_value=img_b.preview.icon_id, scale=1.875)
+                else:
+                    ramp_swatch_row.label(text=mat_label + 'B')
             col_left.separator(factor=0.5)
 
-            b_row = col_left.row(align=True)
-            b_row.enabled = not locked
-            b_sp = b_row.split(factor=0.25, align=True)
-            b_sp.label(text='Colour B:')
-            b_sp.prop(prefs, 'color_b_mode', text='')
-            if prefs.color_b_mode in ('DARKER', 'LIGHTER', 'GREYSCALE'):
-                b_row.prop(prefs, 'color_b_notch', text='Amount', slider=True)
+            # Island Colour
+            col_left.label(text='Island Colour — A:')
+            isl_a_row = col_left.row(align=False)
+            isl_a_row.enabled = not locked
+            isl_a_row.separator()
+            isl_a_row.prop(prefs, 'island_marker_saturation', text="S")
+            isl_a_row.separator(factor=0.5)
+            isl_a_row.prop(prefs, 'island_marker_value',      text="V")
+            isl_a_row.separator()
             col_left.separator(factor=0.5)
 
-            col_left.label(text='Island Colour:', icon='MESH_GRID')
-            isl_sv_row = col_left.row(align=False)
-            isl_sv_row.enabled = not locked
-            for prop, lbl in (('island_marker_saturation', 'Sat'), ('island_marker_value', 'Val')):
-                sp = isl_sv_row.split(factor=0.35, align=False)
-                sp.label(text=lbl)
-                sp.prop(prefs, prop, text='')
-            isl_b_row = col_left.row(align=True)
+            col_left.label(text='Island Colour — B:')
+            isl_b_row = col_left.row(align=False)
             isl_b_row.enabled = not locked
-            isl_b_sp = isl_b_row.split(factor=0.25, align=True)
-            isl_b_sp.label(text='Colour B:')
-            isl_b_sp.prop(prefs, 'island_marker_b_mode', text='')
-            if prefs.island_marker_b_mode in ('DARKER', 'LIGHTER', 'GREYSCALE'):
-                isl_b_row.prop(prefs, 'island_marker_b_notch', text='Amount', slider=True)
+            isl_b_row.separator()
+            isl_b_row.prop(prefs, 'island_marker_b_hue_offset', text="H+")
+            isl_b_row.separator(factor=0.5)
+            isl_b_row.prop(prefs, 'island_marker_b_saturation', text="S")
+            isl_b_row.separator(factor=0.5)
+            isl_b_row.prop(prefs, 'island_marker_b_value',      text="V")
+            isl_b_row.separator()
             col_left.separator(factor=0.5)
 
             # Apply + Reset at bottom of box
             apply_row = col_left.row(align=False)
             apply_row.enabled = not locked
+            apply_row.separator()
             apply_row.operator('fbxmt.apply_anchor', text='Apply', icon='FILE_REFRESH')
             apply_row.separator(factor=0.5)
             apply_row.operator('fbxmt.reset_anchor', text='Reset', icon='LOOP_BACK')
+            apply_row.separator()
             col_left.separator(factor=0.5)
 
-            # ── RIGHT: Checker Style + Density + Scale + Lines ────────────────
+            # ── RIGHT: Checker Style + Density + Scale + Lines + Lock ─────────
             locked = prefs.preset_locked
 
-            col_right.separator(factor=0.5)
-            col_right.label(text='Checker Style:', icon='TEXTURE')
-            col_right.separator(factor=0.5)
-            style_col = col_right.column()
+            checker_box.separator(factor=0.5)
+            checker_box.label(text='Checker Style:', icon='TEXTURE')
+            checker_box.separator(factor=0.5)
+            style_col = checker_box.column()
             style_col.enabled = not locked
-            for (slot_l, label_l), (slot_r, label_r) in (
-                (('wall',    'Wall'),    ('trim',    'Trim')),
-                (('floor',   'Floor'),   ('ignore',  'Ignore')),
-                (('ceiling', 'Ceiling'), ('island',  'Island')),
-            ):
+            for i, ((slot_l, label_l), (slot_r, label_r)) in enumerate((
+                (('wall',         'Wall'),       ('island',       'Island')),
+                (('floor',        'Floor'),      ('ramp_floor',   'Ramp Fl')),
+                (('ceiling',      'Ceiling'),    ('ramp_ceiling', 'Ramp Cl')),
+                (('ignore',       'Ignore'),     ('trim',         'Trim')),
+            )):
+                if i > 0:
+                    style_col.separator(factor=0.4)
                 row = style_col.row(align=False)
+                row.separator()
                 left = row.split(factor=0.5, align=True)
                 ls = left.split(factor=0.35, align=True)
                 ls.label(text=label_l)
@@ -2129,12 +1547,14 @@ class FBXMT_OT_ProjectSetup(Operator):
                 rs = left.split(factor=0.35, align=True)
                 rs.label(text=label_r)
                 rs.prop(prefs, f'checker_pattern_{slot_r}', text='')
-            col_right.separator(factor=0.5)
+                row.separator()
+            checker_box.separator(factor=0.5)
 
-            col_right.label(text='Texel Density:')
-            col_right.separator(factor=0.5)
-            row = col_right.row(align=True)
+            checker_box.label(text='Texel Density:')
+            checker_box.separator(factor=0.5)
+            row = checker_box.row(align=True)
             row.enabled = not locked
+            row.separator()
             for val in (1024, 2048, 4096, 8192):
                 op = row.operator(
                     'fbxmt.project_setup_set_density',
@@ -2142,12 +1562,14 @@ class FBXMT_OT_ProjectSetup(Operator):
                     depress = (props.geo_texel_density == val),
                 )
                 op.density = val
-            col_right.separator(factor=0.5)
+            row.separator()
+            checker_box.separator(factor=0.5)
 
-            col_right.label(text='Checker Scale:')
-            col_right.separator(factor=0.5)
-            row = col_right.row(align=True)
+            checker_box.label(text='Checker Scale:')
+            checker_box.separator(factor=0.5)
+            row = checker_box.row(align=True)
             row.enabled = not locked
+            row.separator()
             for val in (1, 2, 4, 8):
                 op = row.operator(
                     'fbxmt.project_setup_set_checker_scale',
@@ -2155,14 +1577,23 @@ class FBXMT_OT_ProjectSetup(Operator):
                     depress = (prefs.checker_scale == val),
                 )
                 op.value = val
-            col_right.separator(factor=0.5)
+            row.separator()
+            checker_box.separator(factor=0.5)
 
-            lines_row = col_right.row(align=True)
+            lines_row = checker_box.row(align=True)
             lines_row.enabled = not locked
+            lines_row.separator()
             lines_row.prop(prefs, 'show_corner_lines', text='Lines', toggle=True)
             lines_row.separator()
             lines_row.label(text='Seed:')
             lines_row.prop(prefs, 'apex_line_seed', text='')
+            lines_row.separator()
+            checker_box.separator(factor=0.5)
+
+            # Lock settings — own box below checker box, double space above
+            col_right.separator(factor=2.0)
+            lock_box = col_right.box()
+            _draw_preset_lock_ticker(lock_box, prefs)
             col_right.separator(factor=0.5)
 
         # ══════════════════════════════════════════════════════════════════════
@@ -2186,6 +1617,12 @@ class FBXMT_OT_ProjectSetup(Operator):
             import_box.label(text='Import:', icon='IMPORT')
             import_box.prop(props,  'quick_import_type', text='Type')
             import_box.prop(prefs,  'prep_on_import',    text='Full Prep on Import')
+
+            col_left.separator(factor=0.5)
+            classify_box = col_left.box()
+            classify_box.label(text='Classification:', icon='SORTSIZE')
+            classify_box.prop(props, 'uv_floor_threshold', text='Floor Angle')
+            classify_box.prop(props, 'ramp_threshold',     text='Ramp Angle')
 
             # ── RIGHT: Presets ────────────────────────────────────────────────
             preset_box_outer = col_right.box()
@@ -2672,21 +2109,35 @@ def _build_colour_swatches(prefs):
     """
     from .materials import _resolve_color_b
 
-    mode  = getattr(prefs, 'color_b_mode',  'DARKER')
-    notch = getattr(prefs, 'color_b_notch', 2)
+    b_offset = getattr(prefs, 'color_b_hue_offset',  '0')
+    b_sat    = _safe_float(prefs, 'color_b_saturation', 0.6)
+    b_val    = _safe_float(prefs, 'color_b_value', 0.35)
 
     entries = (
-        ('__fbxmt_swatch_wall',    'color_wall_a',    'color_wall_b'),
-        ('__fbxmt_swatch_floor',   'color_floor_a',   'color_floor_b'),
-        ('__fbxmt_swatch_ceiling', 'color_ceiling_a', 'color_ceiling_b'),
+        ('__fbxmt_swatch_wall',         'color_wall_a'),
+        ('__fbxmt_swatch_floor',        'color_floor_a'),
+        ('__fbxmt_swatch_ceiling',      'color_ceiling_a'),
+        ('__fbxmt_swatch_ramp_floor',   'color_ramp_floor_a'),
+        ('__fbxmt_swatch_ramp_ceiling', 'color_ramp_ceiling_a'),
     )
 
-    for a_img_name, prop_a, prop_b in entries:
+    # Transparent spacer swatches for alignment
+    for spacer_name in ('__fbxmt_swatch_spacer_a', '__fbxmt_swatch_spacer_b'):
+        img = bpy.data.images.get(spacer_name)
+        if img is None:
+            img = bpy.data.images.new(spacer_name, width=32, height=32, alpha=True)
+        px = np.zeros((32, 32, 4), dtype=np.float32)
+        img.pixels.foreach_set(px.ravel())
+        try:
+            img.preview.reload()
+        except Exception:
+            pass
+
+    for a_img_name, prop_a in entries:
         b_img_name = a_img_name.replace('_swatch_', '_swatch_b_')
 
         col_a = tuple(getattr(prefs, prop_a, (0.5, 0.5, 0.5, 1.0)))
-        col_b_raw = tuple(getattr(prefs, prop_b, (0.35, 0.35, 0.35, 1.0)))
-        col_b = _resolve_color_b(col_a[:3], mode, col_b_raw[:3], notch, notch)
+        col_b = _resolve_color_b(col_a[:3], b_offset, b_sat, b_val)
 
         for img_name, rgb, glyph in (
             (a_img_name, col_a[:3], 'A'),
@@ -2700,18 +2151,21 @@ def _build_colour_swatches(prefs):
             if img is None:
                 img = bpy.data.images.new(img_name, width=32, height=32, alpha=False)
 
-            # Fill solid colour
+            # Fill solid colour — encode linear→sRGB to match COLOR_GAMMA prop display
+            rl = min(1.0, max(0.0, r)) ** (1/2.2)
+            gl = min(1.0, max(0.0, g)) ** (1/2.2)
+            bl = min(1.0, max(0.0, b)) ** (1/2.2)
             px = np.full((32, 32, 4), 1.0, dtype=np.float32)
-            px[:, :, 0] = r
-            px[:, :, 1] = g
-            px[:, :, 2] = b
+            px[:, :, 0] = rl
+            px[:, :, 1] = gl
+            px[:, :, 2] = bl
 
-            # Stamp glyph into top-left corner (2px margin, 1:1 scale, inverted colour)
-            glyph_col = (1.0 - r, 1.0 - g, 1.0 - b)
+            # Stamp glyph
+            glyph_col = (1.0 - rl, 1.0 - gl, 1.0 - bl)
             glyph_rows = _FONT_5X7.get(glyph, _FONT_5X7[' '])
-            ox, oy = 2, 32 - 2 - 7  # origin: left margin, top margin (y from bottom)
+            ox, oy = 2, 32 - 2 - 7
             for row_idx, row_bits in enumerate(glyph_rows):
-                py = oy + (6 - row_idx)  # _FONT_5X7 rows are top-to-bottom, image y is bottom-up
+                py = oy + (6 - row_idx)
                 for col_idx, bit in enumerate(row_bits):
                     if bit == '1':
                         px_x = ox + col_idx
@@ -2745,28 +2199,35 @@ def _build_preview_materials(prefs, geo_texel_density=None):
         return {}
 
     # Read global B derivation settings directly from prefs
-    mode  = getattr(prefs, 'color_b_mode',  'DARKER')
-    notch = getattr(prefs, 'color_b_notch', 2)
+    b_offset = getattr(prefs, 'color_b_hue_offset',  '0')
+    b_sat    = _safe_float(prefs, 'color_b_saturation', 0.6)
+    b_val    = _safe_float(prefs, 'color_b_value', 0.35)
 
     def _slot_colours(slot):
         """Return (col_a, col_b, pattern) for a slot, reading directly from prefs."""
         col_a   = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
-        col_b_v = tuple(getattr(prefs, f'color_{slot}_b', (0.35,)*4)[:3])
         pattern = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
-        col_b   = _resolve_color_b(col_a, mode, col_b_v, notch, notch)
+        col_b   = _resolve_color_b(col_a, b_offset, b_sat, b_val)
         return col_a, col_b, pattern
 
     _SLOT_TO_MAT = {
-        'floor':   'M_FBXMT_Floor',
-        'ceiling': 'M_FBXMT_Ceiling',
-        'wall':    'M_FBXMT_Wall',
-        'trim':    'M_FBXMT_Trim',
-        'ignore':  'M_FBXMT_Ignore',
+        'floor':        'M_FBXMT_Floor',
+        'ceiling':      'M_FBXMT_Ceiling',
+        'wall':         'M_FBXMT_Wall',
+        'trim':         'M_FBXMT_Trim',
+        'ignore':       'M_FBXMT_Ignore',
+        'ramp_floor':   'M_FBXMT_Ramp_Floor',
+        'ramp_ceiling': 'M_FBXMT_Ramp_Ceiling',
     }
     temp_map = {}
 
     for slot, mat_name in _SLOT_TO_MAT.items():
-        col_a, col_b, pattern = _slot_colours(slot)
+        if slot == 'ignore':
+            col_a   = (0.25, 0.25, 0.25)
+            col_b   = (0.10, 0.10, 0.10)
+            pattern = getattr(prefs, 'checker_pattern_ignore', 'SQUARE')
+        else:
+            col_a, col_b, pattern = _slot_colours(slot)
         tmp_name = f'__fbxmt_preview_{mat_name}'
         tmp = bpy.data.materials.get(tmp_name) or bpy.data.materials.new(tmp_name)
         tmp.use_nodes = True
@@ -2777,43 +2238,52 @@ def _build_preview_materials(prefs, geo_texel_density=None):
     col_a_wall, _, _ = _slot_colours('wall')
     pattern_island   = getattr(prefs, 'checker_pattern_island', 'CIRCLE')
     h_isl, _, _ = colorsys.rgb_to_hls(*col_a_wall)
-    isl_sat = float(getattr(prefs, 'island_marker_saturation', '0.5'))
-    isl_val = float(getattr(prefs, 'island_marker_value', '0.5'))
-    col_a_island = colorsys.hls_to_rgb(h_isl, isl_val, isl_sat)
-    mode_b  = getattr(prefs, 'island_marker_b_mode',  'DARKER')
-    notch_b = getattr(prefs, 'island_marker_b_notch', 1)
-    from .materials import _resolve_color_b
-    col_b_island = _resolve_color_b(col_a_island, mode_b, col_a_island, notch_b, notch_b)
+    isl_sat = _safe_float(prefs, 'island_marker_saturation', 0.6)
+    isl_val = _safe_float(prefs, 'island_marker_value', 0.50)
+    col_a_island  = colorsys.hls_to_rgb(h_isl, isl_val, isl_sat)
+    isl_b_offset  = getattr(prefs, 'island_marker_b_hue_offset', '0')
+    isl_b_sat     = _safe_float(prefs, 'island_marker_b_saturation', 0.6)
+    isl_b_val     = _safe_float(prefs, 'island_marker_b_value', 0.35)
+    col_b_island  = _resolve_color_b(col_a_island, isl_b_offset, isl_b_sat, isl_b_val)
     tmp_name = f'__fbxmt_preview_{ISLAND_MARKER_NAME}'
     tmp = bpy.data.materials.get(tmp_name) or bpy.data.materials.new(tmp_name)
     tmp.use_nodes = True
     _build_checker_node_tree(tmp, col_a_island, col_b_island, pattern=pattern_island, geo_texel_density=geo_texel_density)
     temp_map[ISLAND_MARKER_NAME] = tmp_name
 
-    # Island sub-materials — A = parent B hue with island sat/val, B = island b mode
-    # Read parent colours directly from prefs to ensure correct values
+    # Island sub-materials — A = parent B hue with island sat/val, B = island b modifiers
     def _get_preview_parent_b(slot):
         col_a = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
-        return _resolve_color_b(col_a, getattr(prefs, 'color_b_mode', 'DARKER'),
-                                col_a, getattr(prefs, 'color_b_notch', 1),
-                                getattr(prefs, 'color_b_notch', 1))
+        return _resolve_color_b(col_a, b_offset, b_sat, b_val)
 
     _preview_parent_b = [
         _get_preview_parent_b('wall'),    # group 0: Wall_xx  (i%3==0)
         _get_preview_parent_b('floor'),   # group 1: Floor_xx (i%3==1)
         _get_preview_parent_b('ceiling'), # group 2: Ceil_xx  (i%3==2)
     ]
-    from .materials import _resolve_color_b as _rcb
     for i, name in enumerate(ISLAND_SUB_NAMES):
         group    = i % 3
         parent_b = _preview_parent_b[group]
         h, l, s  = colorsys.rgb_to_hls(*parent_b)
         island_a = colorsys.hls_to_rgb(h, isl_val, isl_sat)
-        island_b = _rcb(island_a, mode_b, island_a, notch_b, notch_b)
+        island_b = _resolve_color_b(island_a, isl_b_offset, isl_b_sat, isl_b_val)
         tmp_name = f'__fbxmt_preview_{name}'
         tmp = bpy.data.materials.get(tmp_name) or bpy.data.materials.new(tmp_name)
         tmp.use_nodes = True
         _build_checker_node_tree(tmp, island_a, island_b, pattern=pattern_island, checker_invert=True, geo_texel_density=geo_texel_density)
+        temp_map[name] = tmp_name
+
+    # Ramp island preview materials
+    from .materials import RAMP_ISLAND_NAMES as _RIN
+    ramp_a_raw    = tuple(getattr(prefs, 'color_ramp_floor_a', (0.6, 0.7, 0.25, 1.0))[:3])
+    h_r, l_r, s_r = colorsys.rgb_to_hls(*ramp_a_raw)
+    ramp_island_a = colorsys.hls_to_rgb(h_r, isl_val, isl_sat)
+    ramp_island_b = _resolve_color_b(ramp_island_a, isl_b_offset, isl_b_sat, isl_b_val)
+    for name in _RIN:
+        tmp_name = f'__fbxmt_preview_{name}'
+        tmp = bpy.data.materials.get(tmp_name) or bpy.data.materials.new(tmp_name)
+        tmp.use_nodes = True
+        _build_checker_node_tree(tmp, ramp_island_a, ramp_island_b, pattern=pattern_island, checker_invert=True, geo_texel_density=geo_texel_density)
         temp_map[name] = tmp_name
 
     return temp_map
@@ -2843,7 +2313,7 @@ def _render_dialog_tiles_sync(context):
     _build_colour_swatches(prefs)
 
     try:
-        render_list = list(ALL_DISPLAY_MATERIAL_NAMES) + ['M_FBXMT_Island_Wall_03']
+        render_list = list(ALL_DISPLAY_MATERIAL_NAMES)
         for mat_name in render_list:
             render_name = temp_map.get(mat_name, mat_name)
             img = _render_tile(render_name, context, split=True, no_apex_lines=True)
@@ -2884,7 +2354,7 @@ class FBXMT_OT_BakeAllModal(Operator):
 
         ensure_fbxmt_materials()
 
-        self._mat_queue = list(ALL_DISPLAY_MATERIAL_NAMES)
+        self._mat_queue = list(ALL_DISPLAY_MATERIAL_NAMES) + ['M_FBXMT_Ramp_Floor', 'M_FBXMT_Ramp_Ceiling']
         self._total     = len(self._mat_queue)
         self._done      = 0
         self._temp_map  = {}
@@ -3062,9 +2532,9 @@ class FBXMT_OT_ContactSheet_Benchmark(Operator):
 
         prefs   = _get_prefs()
 
-        from .materials import ISLAND_SUB_NAMES as _ISN
+        from .materials import ALL_ISLAND_SUB_NAMES as _AISN
         base_mat_names = list(BAKE_MATERIAL_NAMES)
-        full_mat_names = base_mat_names + list(_ISN)
+        full_mat_names = base_mat_names + list(_AISN)
 
         tile_sets = (
             ('Base', base_mat_names),
@@ -3178,7 +2648,6 @@ CLASSES = (
     FBXMT_OT_ProjectSetup_SetContactSheetSize,
     FBXMT_OT_ApplyAnchor,
     FBXMT_OT_ResetAnchor,
-    FBXMT_OT_ProjectSetup_Preview,
     FBXMT_OT_ProjectSetup_ContactSheet,
     OT_FBXMT_Preset_Save,
     FBXMT_OT_Preset_LoadDefault,
@@ -3213,7 +2682,7 @@ def register():
     )
     bpy.types.Scene.fbxmt_preview_mode = bpy.props.EnumProperty(
         name  = "Preview Mode",
-        items = [("TILE", "Tile", ""), ("MODEL", "Model", ""), ("SHEET", "Contact Sheet", "")],
+        items = [("TILE", "Tile", ""), ("SHEET", "Contact Sheet", "")],
         default = "TILE",
     )
     bpy.types.Scene.fbxmt_selected_preset_index = bpy.props.IntProperty(

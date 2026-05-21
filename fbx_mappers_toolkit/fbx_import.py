@@ -92,6 +92,7 @@ def get_newly_imported(before_names, import_type):
         scene               = bpy.context.scene
         props               = scene.fbxmt_props
         floor_threshold_dot = math.cos(math.radians(props.uv_floor_threshold))
+        ramp_threshold_dot  = math.cos(math.radians(props.ramp_threshold))
         z_axis              = _Vector((0.0, 0.0, 1.0))
 
         _mat_module._suppress_handler = True
@@ -141,10 +142,12 @@ def get_newly_imported(before_names, import_type):
                         continue
                     world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
                     dot_z        = abs(world_normal.dot(z_axis))
-                    mn = (
-                        ('M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling')
-                        if dot_z >= floor_threshold_dot else 'M_FBXMT_Wall'
-                    )
+                    if dot_z >= ramp_threshold_dot:
+                        mn = 'M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling'
+                    elif dot_z >= floor_threshold_dot:
+                        mn = 'M_FBXMT_Ramp_Floor' if world_normal.z > 0 else 'M_FBXMT_Ramp_Ceiling'
+                    else:
+                        mn = 'M_FBXMT_Wall'
                     if mn in slot_index:
                         face.material_index = slot_index[mn]
                 bm.to_mesh(mesh)

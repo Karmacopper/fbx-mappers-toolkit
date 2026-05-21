@@ -5,6 +5,7 @@ from mathutils import Vector
 import math
 from .materials import (
     FBXMT_FLOOR_MATERIALS,
+    FBXMT_RAMP_MATERIALS,
     FBXMT_WALL_MATERIALS,
     FBXMT_IGNORE_MATERIAL,
     ISLAND_SUB_PREFIX,
@@ -416,6 +417,7 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
 
     Face routing:
       Floor/Ceiling  → world Z projection
+      Ramp           → world Z projection (same as floor, own islands)
       Wall/Trim      → per-face normal, edge-stitched strip
       Chain_NN       → per-face normal, edge-stitched strip, grouped by chain
                        number first then by connectivity — each connected
@@ -438,6 +440,7 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
         uv_layer = bm.loops.layers.uv.new(uv_layer_name)
 
     floor_faces  = []
+    ramp_faces   = []
     wall_faces   = []
     # island_faces: dict of sub-material name → [BMFace, ...]
     island_faces = {}
@@ -459,6 +462,8 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
         mat_name = get_face_material_name(face, mesh)
         if mat_name in FBXMT_FLOOR_MATERIALS:
             floor_faces.append(face)
+        elif mat_name in FBXMT_RAMP_MATERIALS:
+            ramp_faces.append(face)
         elif mat_name in FBXMT_WALL_MATERIALS:
             wall_faces.append(face)
         elif mat_name == ISLAND_MARKER_NAME:
@@ -475,6 +480,11 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
 
     # Floors / ceilings
     for group in find_connected_groups(floor_faces):
+        project_floor_group(group, uv_layer, world_matrix)
+        all_groups.append(group)
+
+    # Ramps — floor projection (world X/Y), each connected group its own island
+    for group in find_connected_groups(ramp_faces):
         project_floor_group(group, uv_layer, world_matrix)
         all_groups.append(group)
 
@@ -512,7 +522,7 @@ def unwrap_mesh(mesh, world_matrix, floor_threshold_dot, selected_only=False):
     _write_uv_colours(mesh)
 
     total_island = sum(len(v) for v in island_faces.values())
-    return len(floor_faces) + len(wall_faces) + total_island
+    return len(floor_faces) + len(ramp_faces) + len(wall_faces) + total_island
 
 
 # ─── UV Map List Operators ────────────────────────────────────────────────────

@@ -1,7 +1,7 @@
 import bpy
 from bpy.types import Panel, AddonPreferences, UIList
 from .materials import LIGHTMAP_CHANNEL_NAME, PREVIEW_UV_NAME
-from .props import FBXMT_GlobalPrefs, FBXMT_Props, PATTERN_ITEMS, _COLOR_B_MODE_ITEMS
+from .props import FBXMT_GlobalPrefs, FBXMT_Props, PATTERN_ITEMS, _SAT_ITEMS, _VAL_ITEMS, _HUE_OFFSET_ITEMS
 
 # Slot key for each material in display order — must match props naming convention
 _MAT_DISPLAY_ORDER = [
@@ -44,48 +44,48 @@ def _draw_preset_lock_ticker(layout, prefs):
 
 
 def _draw_material_colour_controls(layout, prefs, slot):
-    """Draw the pattern dropdown, colour B mode dropdown, and conditional B control.
+    """Draw colour modifier controls — A row (Hue/Sat/Val) and B row (HueOffset/Sat/Val).
 
-    All controls are disabled when prefs.preset_locked is True.
+    Island slot uses island_marker_* props for A and island_marker_b_* for B.
+    All controls disabled when prefs.preset_locked is True.
     Caller should draw _draw_preset_lock_ticker above this.
     """
-    locked = prefs.preset_locked
+    locked    = prefs.preset_locked
+    is_island = (slot == 'island')
 
-    pattern_prop  = f'checker_pattern_{slot}'
-    mode_prop     = f'color_b_mode_{slot}'
-    col_a_prop    = f'color_{slot}_a'
-    col_b_prop    = f'color_{slot}_b'
-    darker_prop   = f'color_b_darker_{slot}'
-    grey_prop     = f'color_b_grey_{slot}'
-
-    # ── Two dropdowns side by side ────────────────────────────────────────────
+    # ── Pattern dropdown ──────────────────────────────────────────────────────
     row = layout.row(align=True)
     row.enabled = not locked
-    row.prop(prefs, pattern_prop, text="")
-    row.prop(prefs, mode_prop,    text="")
+    row.prop(prefs, f'checker_pattern_{slot}', text="")
 
-    # ── Box: Colour A always, Colour B conditional ────────────────────────────
-    box  = layout.box()
-    box.enabled = not locked
-    mode = getattr(prefs, mode_prop, 'MANUAL')
+    # ── A controls ───────────────────────────────────────────────────────────
+    box_a = layout.box()
+    box_a.enabled = not locked
+    box_a.label(text="A")
+    row_a = box_a.row(align=True)
+    row_a.prop(prefs, 'anchor_hue', text="H")
+    if is_island:
+        row_a.prop(prefs, 'island_marker_saturation', text="S")
+        row_a.prop(prefs, 'island_marker_value',      text="V")
+    else:
+        row_a.prop(prefs, 'anchor_saturation', text="S")
+        row_a.prop(prefs, 'anchor_value',      text="V")
 
-    # Colour A — always a free picker, full width
-    box.prop(prefs, col_a_prop, text="A")
+    # ── B controls ───────────────────────────────────────────────────────────
+    box_b = layout.box()
+    box_b.enabled = not locked
+    box_b.label(text="B")
+    row_b = box_b.row(align=True)
+    if is_island:
+        row_b.prop(prefs, 'island_marker_b_hue_offset', text="H+")
+        row_b.prop(prefs, 'island_marker_b_saturation', text="S")
+        row_b.prop(prefs, 'island_marker_b_value',      text="V")
+    else:
+        row_b.prop(prefs, 'color_b_hue_offset', text="H+")
+        row_b.prop(prefs, 'color_b_saturation', text="S")
+        row_b.prop(prefs, 'color_b_value',      text="V")
 
-    # Colour B — depends on mode, below A
-    if mode == 'MANUAL':
-        box.prop(prefs, col_b_prop, text="B")
 
-    elif mode == 'DARKER':
-        box.label(text="B — Lighter / Darker")
-        box.prop(prefs, darker_prop, text="", slider=True)
-
-    elif mode == 'GREYSCALE':
-        box.label(text="B — Grey Level")
-        box.prop(prefs, grey_prop, text="", slider=True)
-
-    elif mode == 'INVERSE':
-        box.label(text="B — inverse of A", icon='INFO')
 
 
 
@@ -316,8 +316,6 @@ class FBXMT_PT_UVUnwrap(Panel):
             layout.label(text="No mesh selected", icon="INFO")
 
         layout.separator()
-
-        layout.prop(props, "uv_floor_threshold")
 
         # Disable unwrap if selected object is in Trim or Props collection
         in_trim_or_props = False

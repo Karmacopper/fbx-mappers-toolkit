@@ -8,20 +8,45 @@ from bpy.types import Operator
 from bpy.props import FloatVectorProperty
 
 
+def _safe_float(prefs, prop, default):
+    """Read a float-valued EnumProperty safely.
+
+    EnumProperty stores values as strings. If the saved blend file has a value
+    that no longer exists in the items list Blender returns '' — plain float()
+    raises ValueError. This helper falls back to default and resets the prop
+    to a valid string value so the UI dropdown shows correctly next redraw.
+    """
+    raw = getattr(prefs, prop, str(default))
+    try:
+        v = float(raw)
+        if v == 0.0 and raw == '':
+            raise ValueError
+        return v
+    except (ValueError, TypeError):
+        # Reset prop to closest valid string so UI shows a value
+        try:
+            setattr(prefs, prop, str(default))
+        except Exception:
+            pass
+        return default
+
 # ─── Base material definitions ────────────────────────────────────────────────
 
 FBXMT_MATERIALS = {
-    'M_FBXMT_Floor':   (0.3,  0.75, 0.3,  1.0),
-    'M_FBXMT_Ceiling': (0.3,  0.55, 0.9,  1.0),
-    'M_FBXMT_Wall':    (0.9,  0.65, 0.2,  1.0),
-    'M_FBXMT_Trim':    (0.75, 0.3,  0.75, 1.0),
-    'M_FBXMT_Ignore':  (0.25, 0.25, 0.25, 1.0),
+    'M_FBXMT_Floor':         (0.3,  0.75, 0.3,  1.0),
+    'M_FBXMT_Ceiling':       (0.3,  0.55, 0.9,  1.0),
+    'M_FBXMT_Wall':          (0.9,  0.65, 0.2,  1.0),
+    'M_FBXMT_Trim':          (0.75, 0.3,  0.75, 1.0),
+    'M_FBXMT_Ignore':        (0.25, 0.25, 0.25, 1.0),
+    'M_FBXMT_Ramp_Floor':    (0.6,  0.7,  0.25, 1.0),
+    'M_FBXMT_Ramp_Ceiling':  (0.45, 0.65, 0.75, 1.0),
 }
 
 FBXMT_FLOOR_MATERIALS = {'M_FBXMT_Floor', 'M_FBXMT_Ceiling'}
+FBXMT_RAMP_MATERIALS  = {'M_FBXMT_Ramp_Floor', 'M_FBXMT_Ramp_Ceiling'}
 FBXMT_WALL_MATERIALS  = {'M_FBXMT_Wall', 'M_FBXMT_Trim'}
 FBXMT_IGNORE_MATERIAL = 'M_FBXMT_Ignore'
-FBXMT_ALL_MATERIALS   = FBXMT_FLOOR_MATERIALS | FBXMT_WALL_MATERIALS | {FBXMT_IGNORE_MATERIAL}
+FBXMT_ALL_MATERIALS   = FBXMT_FLOOR_MATERIALS | FBXMT_RAMP_MATERIALS | FBXMT_WALL_MATERIALS | {FBXMT_IGNORE_MATERIAL}
 
 # Checker textures removed — all materials now use procedural node trees
 
@@ -44,6 +69,12 @@ ISLAND_SUB_NAMES   = [
         f'M_FBXMT_Island_Ceil_{i:02d}',
     )
 ]
+
+RAMP_ISLAND_NAMES  = [f'M_FBXMT_Island_Ramp_{i:02d}' for i in range(1, 4)]
+
+# Combined set for fast membership tests — covers all hidden sub-materials
+ALL_ISLAND_SUB_NAMES = ISLAND_SUB_NAMES + RAMP_ISLAND_NAMES
+_ALL_ISLAND_SUB_SET  = set(ALL_ISLAND_SUB_NAMES)
 # B values for sub-materials: cycle through 5 darkness steps, repeated across 15 slots
 # Step darknesses: 100%, 80%, 60%, 40%, 20% of parent Colour B toward black
 _ISLAND_B_STEP_COUNT = 5
@@ -62,11 +93,6 @@ _ISLAND_COLOR_A = colorsys.hls_to_rgb(0.58, 0.55, 0.90)  # bright cyan
 _CHAIN_DEFAULTS = []  # legacy — no longer used for new files
 
 CHECKER_BLUE_RGB   = _ISLAND_COLOR_A
-
-# Lighter/Darker multipliers (indices 0-6, default index 3 = 1.0 = same as A)
-_DARKER_MULTIPLIERS = [0.30, 0.50, 0.70, 1.00, 1.30, 1.50, 1.70]
-# Greyscale values (indices 0-4: black, 25%, 50%, 75%, white)
-_GREY_VALUES        = [0.0, 0.25, 0.50, 0.75, 1.0]
 
 COLLECTION_GEO        = 'Geo'
 COLLECTION_PROPS      = 'Props'
@@ -90,16 +116,18 @@ _suppress_handler = False
 # ─── Island marker helpers ───────────────────────────────────────────────────
 
 def _island_sub_index(mat_name):
-    """Return 1-based index (1-15) of a named island sub-material, or None."""
-    try:
-        return ISLAND_SUB_NAMES.index(mat_name) + 1
-    except ValueError:
-        return None
+    """Return 1-based index of a named island sub-material (base or ramp), or None."""
+    if mat_name in _ALL_ISLAND_SUB_SET:
+        try:
+            return ALL_ISLAND_SUB_NAMES.index(mat_name) + 1
+        except ValueError:
+            pass
+    return None
 
 
 def _is_island_sub_material(mat):
-    """True for hidden sub-materials M_FBXMT_Island_01..15."""
-    return mat is not None and mat.name in set(ISLAND_SUB_NAMES)
+    """True for any hidden island sub-material (base or ramp)."""
+    return mat is not None and mat.name in _ALL_ISLAND_SUB_SET
 
 
 def _is_island_material(mat):
@@ -110,8 +138,8 @@ def _is_island_material(mat):
 
 
 def get_all_island_sub_materials():
-    """All 15 hidden sub-materials, creating missing ones."""
-    return [bpy.data.materials.get(n) for n in ISLAND_SUB_NAMES if bpy.data.materials.get(n)]
+    """All hidden sub-materials (base + ramp), creating missing ones."""
+    return [bpy.data.materials.get(n) for n in ALL_ISLAND_SUB_NAMES if bpy.data.materials.get(n)]
 
 
 # Legacy aliases so old code that imports _chain_index / _is_chain_material
@@ -147,32 +175,23 @@ def setup_material_nodes(mat, colour, scale=None, color_b=None, pattern='SQUARE'
     mat.diffuse_color = (*colour[:3], 1.0)
 
 
-def _resolve_color_b(color_a_rgb, mode, color_b_rgb, darker_idx=1, grey_idx=2):
+def _resolve_color_b(color_a_rgb, hue_offset_deg, sat, val):
     """Return the resolved colour B as an RGB tuple.
 
-    mode='DARKER'  — darken A's lightness by notch (1=20%, 2=40%)
-    mode='LIGHTER' — lighten A's lightness by notch (1=20%, 2=40%)
-    mode='INVERSE' — rotate A's hue by 180°, keep S and L
+    Derives B from A by:
+      - rotating A's hue by hue_offset_deg (0-180, 30-degree steps)
+      - applying independent sat and val (both 0.0-1.0)
+
+    color_a_rgb  — (r, g, b) tuple for colour A
+    hue_offset_deg — int or str, degrees to rotate hue (0, 30, 60 ... 180)
+    sat          — float 0.0-1.0, saturation for B
+    val          — float 0.0-1.0, value/lightness for B (HLS lightness)
     """
-    # Notch → lightness offset: 1=0.20, 2=0.40
-    _NOTCH_OFFSETS = [0.20, 0.40]
-
     r, g, b = color_a_rgb[0], color_a_rgb[1], color_a_rgb[2]
-
-    if mode in ('DARKER', 'LIGHTER'):
-        h, l, s = colorsys.rgb_to_hls(r, g, b)
-        offset  = _NOTCH_OFFSETS[max(0, min(1, darker_idx - 1))]
-        if mode == 'DARKER':
-            new_l = max(0.0, l - offset)
-        else:
-            new_l = min(1.0, l + offset)
-        return colorsys.hls_to_rgb(h, new_l, s)
-
-    if mode == 'INVERSE':
-        h, l, s = colorsys.rgb_to_hls(r, g, b)
-        return colorsys.hls_to_rgb((h + 0.5) % 1.0, l, s)
-
-    return tuple(color_b_rgb[:3])  # fallback
+    h, _l, _s = colorsys.rgb_to_hls(r, g, b)
+    offset = int(hue_offset_deg) / 360.0
+    h_new  = (h + offset) % 1.0
+    return colorsys.hls_to_rgb(h_new, float(val), float(sat))
 
 
 def _build_pattern_nodes(nodes, links, new_node, mapping_checker, pattern):
@@ -726,6 +745,20 @@ def ensure_island_materials():
             sub_b    = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + off)), max(0.6, s))
             _build_checker_node_tree(mat, parent_a, sub_b, checker_invert=True)
             created.append(name)
+
+    # Ramp island sub-materials — 3 slots, parent is Ramp Floor A
+    ramp_a = _get_col('color_ramp_floor_a')
+    if ramp_a == col_a:  # fallback if prop missing
+        ramp_a = tuple(FBXMT_MATERIALS['M_FBXMT_Ramp_Floor'][:3])
+    ramp_offsets = [-0.25, 0.0, 0.25]
+    for i, name in enumerate(RAMP_ISLAND_NAMES):
+        if name not in bpy.data.materials:
+            mat   = bpy.data.materials.new(name=name)
+            h, l, s = colorsys.rgb_to_hls(*ramp_a)
+            hue_b = (h + 0.5) % 1.0
+            sub_b = colorsys.hls_to_rgb(hue_b, max(0.15, min(0.85, 0.5 + ramp_offsets[i])), max(0.6, s))
+            _build_checker_node_tree(mat, ramp_a, sub_b, checker_invert=True)
+            created.append(name)
     return created
 
 
@@ -738,33 +771,32 @@ def _derive_colours_from_anchor(prefs):
     """Populate all colour props on prefs from anchor_hue, anchor_saturation, anchor_value.
 
     Derivation:
-      Wall A    = HSV(H,        S, V)
-      Floor A   = HSV(H+120°,   S, V)
-      Ceiling A = HSV(H+240°,   S, V)
-      Trim A    = HSV(H+270°,   S, V)
+      Wall A    = HSL(H,        S, V)
+      Floor A   = HSL(H+120,    S, V)
+      Ceiling A = HSL(H+240,    S, V)
+      Trim A    = HSL(H+270,    S, V)
       Ignore A  = 25% grey  (hue-independent)
       Ignore B  = 75% grey  (hue-independent)
-    B colours for Wall/Floor/Ceiling/Trim derived via global color_b_mode/color_b_notch.
-    S and V default to 1.0 and 0.5 if not set (backwards compatible).
+    B colours derived via color_b_hue_offset / color_b_saturation / color_b_value.
     """
     if not prefs:
         print('[FBXMT] _derive_colours_from_anchor: prefs is None — aborting')
         return
 
-    h_base = float(prefs.anchor_hue) % 1.0
-    # anchor_saturation and anchor_value are EnumProperty — stored as strings, parse to float
-    s = float(getattr(prefs, 'anchor_saturation', '1.0'))
-    l = float(getattr(prefs, 'anchor_value',      '0.5'))  # stored as 'value', used as HLS lightness
-    mode   = getattr(prefs, 'color_b_mode',  'DARKER')
-    notch  = getattr(prefs, 'color_b_notch', 3)
+    h_base    = float(prefs.anchor_hue) % 1.0
+    s_a       = _safe_float(prefs, 'anchor_saturation', 0.6)
+    v_a       = _safe_float(prefs, 'anchor_value', 0.50)
+    b_offset  = getattr(prefs, 'color_b_hue_offset',  '0')
+    b_sat     = _safe_float(prefs, 'color_b_saturation', 0.6)
+    b_val     = _safe_float(prefs, 'color_b_value', 0.35)
 
     def _hue_col(offset_norm):
         h = (h_base + offset_norm) % 1.0
-        r, g, b = colorsys.hls_to_rgb(h, l, s)
+        r, g, b = colorsys.hls_to_rgb(h, v_a, s_a)
         return (r, g, b, 1.0)
 
     def _derive_b(col_a_rgb):
-        return (*_resolve_color_b(col_a_rgb, mode, col_a_rgb, notch, notch), 1.0)
+        return (*_resolve_color_b(col_a_rgb, b_offset, b_sat, b_val), 1.0)
 
     # A colours — offsets as fractions of the colour wheel
     wall_a    = _hue_col(0.0)
@@ -777,13 +809,7 @@ def _derive_colours_from_anchor(prefs):
     prefs.color_ceiling_a = ceiling_a
     prefs.color_trim_a    = trim_a
     prefs.color_ignore_a  = (0.25, 0.25, 0.25, 1.0)
-    prefs.color_ignore_b  = (0.75, 0.75, 0.75, 1.0)
-
-    # B colours (Wall/Floor/Ceiling/Trim via global mode)
-    prefs.color_wall_b    = _derive_b(wall_a[:3])
-    prefs.color_floor_b   = _derive_b(floor_a[:3])
-    prefs.color_ceiling_b = _derive_b(ceiling_a[:3])
-    prefs.color_trim_b    = _derive_b(trim_a[:3])
+    # B colours are no longer stored — always derived fresh via _resolve_color_b
 
 
 def ensure_fbxmt_materials():
@@ -812,12 +838,12 @@ def _read_mat_settings(slot):
     prefs = _get_prefs()
     if not prefs:
         return None, None, 'SQUARE'
-    col_a   = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
-    col_b_v = tuple(getattr(prefs, f'color_{slot}_b', (0.35,)*4)[:3])
-    mode    = getattr(prefs, 'color_b_mode',  'DARKER')
-    notch   = getattr(prefs, 'color_b_notch', 2)
-    pattern = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
-    col_b   = _resolve_color_b(col_a, mode, col_b_v, notch, notch)
+    col_a    = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
+    b_offset = getattr(prefs, 'color_b_hue_offset',  '0')
+    b_sat    = _safe_float(prefs, 'color_b_saturation', 0.6)
+    b_val    = _safe_float(prefs, 'color_b_value', 0.35)
+    pattern  = getattr(prefs, f'checker_pattern_{slot}', 'SQUARE')
+    col_b    = _resolve_color_b(col_a, b_offset, b_sat, b_val)
     return col_a, col_b, pattern
 
 
@@ -836,22 +862,30 @@ def rebuild_fbxmt_materials():
 
     # Slot key → material name mapping
     _SLOT_TO_MAT = {
-        'floor':   'M_FBXMT_Floor',
-        'ceiling': 'M_FBXMT_Ceiling',
-        'wall':    'M_FBXMT_Wall',
-        'trim':    'M_FBXMT_Trim',
-        'ignore':  'M_FBXMT_Ignore',
+        'floor':        'M_FBXMT_Floor',
+        'ceiling':      'M_FBXMT_Ceiling',
+        'wall':         'M_FBXMT_Wall',
+        'trim':         'M_FBXMT_Trim',
+        'ignore':       'M_FBXMT_Ignore',
+        'ramp_floor':   'M_FBXMT_Ramp_Floor',
+        'ramp_ceiling': 'M_FBXMT_Ramp_Ceiling',
     }
     rebuilt = []
 
     for slot, mat_name in _SLOT_TO_MAT.items():
         try:
             mat = bpy.data.materials.get(mat_name) or bpy.data.materials.new(name=mat_name)
-            col_a, col_b, pattern = _read_mat_settings(slot)
-            if col_a is None:
-                default = FBXMT_MATERIALS[mat_name]
-                r, g, b = default[:3]
-                col_a, col_b, pattern = (r,g,b), (r*.7, g*.7, b*.7), 'SQUARE'
+            if slot == 'ignore':
+                # Ignore is always hue-independent grey — never follows the anchor
+                col_a   = (0.25, 0.25, 0.25)
+                col_b   = (0.10, 0.10, 0.10)
+                pattern = getattr(prefs, 'checker_pattern_ignore', 'SQUARE') if prefs else 'SQUARE'
+            else:
+                col_a, col_b, pattern = _read_mat_settings(slot)
+                if col_a is None:
+                    default = FBXMT_MATERIALS[mat_name]
+                    r, g, b = default[:3]
+                    col_a, col_b, pattern = (r,g,b), (r*.7, g*.7, b*.7), 'SQUARE'
             setup_material_nodes(mat, col_a, color_b=col_b, pattern=pattern)
             rebuilt.append(mat_name)
         except Exception:
@@ -869,41 +903,40 @@ def rebuild_fbxmt_materials():
 
         # Override sat/val with island-specific controls while keeping anchor hue
         import colorsys
-        h, s, v = colorsys.rgb_to_hsv(*col_a_island[:3])
-        isl_sat = float(getattr(prefs, 'island_marker_saturation', '0.5'))
-        isl_val = float(getattr(prefs, 'island_marker_value', '0.5'))
-        col_a_island = colorsys.hsv_to_rgb(h, isl_sat, isl_val)
+        h, _l, _s = colorsys.rgb_to_hls(*col_a_island[:3])
+        isl_sat = _safe_float(prefs, 'island_marker_saturation', 0.6)
+        isl_val = _safe_float(prefs, 'island_marker_value', 0.50)
+        col_a_island = colorsys.hls_to_rgb(h, isl_val, isl_sat)
         _, _, pattern_island = _read_mat_settings('island')
         if pattern_island is None:
             pattern_island = 'SQUARE'
 
-        # Visible marker — B derived from island-specific b mode
-        mode  = getattr(prefs, 'island_marker_b_mode',  'DARKER')
-        notch = getattr(prefs, 'island_marker_b_notch', 1)
-        col_b_island = _resolve_color_b(col_a_island, mode, col_a_island, notch, notch)
+        # Visible marker — B derived from island-specific b controls
+        isl_b_offset = getattr(prefs, 'island_marker_b_hue_offset', '0')
+        isl_b_sat    = _safe_float(prefs, 'island_marker_b_saturation', 0.6)
+        isl_b_val    = _safe_float(prefs, 'island_marker_b_value', 0.35)
+        col_b_island = _resolve_color_b(col_a_island, isl_b_offset, isl_b_sat, isl_b_val)
         marker = bpy.data.materials.get(ISLAND_MARKER_NAME) or bpy.data.materials.new(name=ISLAND_MARKER_NAME)
         _build_checker_node_tree(marker, col_a_island, col_b_island, pattern=pattern_island)
         rebuilt.append(ISLAND_MARKER_NAME)
 
         # Hidden sub-materials — Wall_01-05, Floor_01-05, Ceil_01-05
         # Island A = parent's colour B hue, with island sat/val controls
-        # Island B = derived from Island A using island_marker_b_mode
-        # Read parent B colours directly from prefs — most authoritative source
+        # Island B = derived from Island A using island B modifiers
+        # Read parent B colours using global B modifiers — most authoritative source
+        b_offset = getattr(prefs, 'color_b_hue_offset',  '0')
+        b_sat    = _safe_float(prefs, 'color_b_saturation', 0.6)
+        b_val    = _safe_float(prefs, 'color_b_value', 0.35)
+
         def _get_parent_b(slot):
             col_a = tuple(getattr(prefs, f'color_{slot}_a', (0.5,)*4)[:3])
-            return _resolve_color_b(col_a,
-                                    getattr(prefs, 'color_b_mode', 'DARKER'),
-                                    col_a,
-                                    getattr(prefs, 'color_b_notch', 1),
-                                    getattr(prefs, 'color_b_notch', 1))
+            return _resolve_color_b(col_a, b_offset, b_sat, b_val)
 
         _parent_b_cols = [
             _get_parent_b('wall'),    # group 0: Wall_xx  (i%3==0)
             _get_parent_b('floor'),   # group 1: Floor_xx (i%3==1)
             _get_parent_b('ceiling'), # group 2: Ceil_xx  (i%3==2)
         ]
-        isl_mode  = getattr(prefs, 'island_marker_b_mode',  'DARKER')
-        isl_notch = getattr(prefs, 'island_marker_b_notch', 1)
 
         for i, name in enumerate(ISLAND_SUB_NAMES):
             mat      = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
@@ -914,9 +947,21 @@ def rebuild_fbxmt_materials():
             h, l, s  = colorsys.rgb_to_hls(*parent_b)
             island_a = colorsys.hls_to_rgb(h, isl_val, isl_sat)
 
-            # Island B = derived from Island A via island b mode
-            island_b = _resolve_color_b(island_a, isl_mode, island_a, isl_notch, isl_notch)
+            # Island B = derived from Island A via island B modifiers
+            island_b = _resolve_color_b(island_a, isl_b_offset, isl_b_sat, isl_b_val)
 
+            _build_checker_node_tree(mat, island_a, island_b, pattern=pattern_island, checker_invert=True)
+            rebuilt.append(name)
+
+        # Ramp island sub-materials — 3 slots, parent is Ramp Floor A
+        col_a_ramp, _, _ = _read_mat_settings('ramp_floor')
+        if col_a_ramp is None:
+            col_a_ramp = tuple(FBXMT_MATERIALS['M_FBXMT_Ramp_Floor'][:3])
+        for i, name in enumerate(RAMP_ISLAND_NAMES):
+            mat      = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
+            h, l, s  = colorsys.rgb_to_hls(*col_a_ramp)
+            island_a = colorsys.hls_to_rgb(h, isl_val, isl_sat)
+            island_b = _resolve_color_b(island_a, isl_b_offset, isl_b_sat, isl_b_val)
             _build_checker_node_tree(mat, island_a, island_b, pattern=pattern_island, checker_invert=True)
             rebuilt.append(name)
     except Exception as e:
@@ -1097,6 +1142,12 @@ class OT_FBXMT_Rebuild_Materials(Operator):
         _materials_built = False
         rebuilt = rebuild_fbxmt_materials()
         self.report({'INFO'}, f'Rebuilt: {", ".join(rebuilt)}')
+        # Regenerate __tile_* preview images so the N-panel UIList stays current
+        try:
+            with context.temp_override(window=context.window, scene=context.scene):
+                bpy.ops.fbxmt.bake_all_modal('INVOKE_DEFAULT')
+        except Exception as e:
+            print(f'[FBXMT] tile rebuild after Rebuild failed: {e}')
         return {'FINISHED'}
 
 
@@ -1126,6 +1177,7 @@ class OT_FBXMT_Assign_Materials(Operator):
 
             props               = context.scene.fbxmt_props
             floor_threshold_dot = math.cos(math.radians(props.uv_floor_threshold))
+            ramp_threshold_dot  = math.cos(math.radians(props.ramp_threshold))
             z_axis              = Vector((0.0, 0.0, 1.0))
             edit_mode           = context.mode == 'EDIT_MESH'
 
@@ -1174,8 +1226,10 @@ class OT_FBXMT_Assign_Materials(Operator):
                     world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
                     dot_z        = abs(world_normal.dot(z_axis))
 
-                    if dot_z >= floor_threshold_dot:
+                    if dot_z >= ramp_threshold_dot:
                         mat_name = 'M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling'
+                    elif dot_z >= floor_threshold_dot:
+                        mat_name = 'M_FBXMT_Ramp_Floor' if world_normal.z > 0 else 'M_FBXMT_Ramp_Ceiling'
                     else:
                         mat_name = 'M_FBXMT_Wall'
 
@@ -1202,11 +1256,13 @@ class OT_FBXMT_Assign_Materials(Operator):
 
 # Human-readable aliases for base material internal names.
 _BASE_MAT_ALIASES = {
-    'M_FBXMT_Floor':   'Floor',
-    'M_FBXMT_Ceiling': 'Ceiling',
-    'M_FBXMT_Wall':    'Wall',
-    'M_FBXMT_Trim':    'Trim',
-    'M_FBXMT_Ignore':  'Ignore',
+    'M_FBXMT_Floor':        'Floor',
+    'M_FBXMT_Ceiling':      'Ceiling',
+    'M_FBXMT_Wall':         'Wall',
+    'M_FBXMT_Trim':         'Trim',
+    'M_FBXMT_Ignore':       'Ignore',
+    'M_FBXMT_Ramp_Floor':   'Ramp Floor',
+    'M_FBXMT_Ramp_Ceiling': 'Ramp Ceiling',
 }
 
 def _island_alias(mat_name):
@@ -1242,12 +1298,14 @@ class FBXMT_UL_BaseMaterials(bpy.types.UIList):
 
 # Canonical display order and aliases for the unified list
 _ALL_MAT_DISPLAY = {
-    'M_FBXMT_Floor':   'Floor',
-    'M_FBXMT_Ceiling': 'Ceiling',
-    'M_FBXMT_Wall':    'Wall',
-    'M_FBXMT_Trim':    'Trim',
-    'M_FBXMT_Ignore':  'Ignore',
-    'M_FBXMT_Island':  'Island Marker',
+    'M_FBXMT_Floor':        'Floor',
+    'M_FBXMT_Ceiling':      'Ceiling',
+    'M_FBXMT_Wall':         'Wall',
+    'M_FBXMT_Trim':         'Trim',
+    'M_FBXMT_Ignore':       'Ignore',
+    'M_FBXMT_Island':       'Island Marker',
+    'M_FBXMT_Ramp_Floor':   'Ramp Floor',
+    'M_FBXMT_Ramp_Ceiling': 'Ramp Ceiling',
 }
 # Hidden sub-materials are intentionally absent from _ALL_MAT_DISPLAY
 # so they never appear in the panel UIList.
