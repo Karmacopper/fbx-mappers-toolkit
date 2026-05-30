@@ -114,12 +114,37 @@ class FBXMT_AddonPreferences(AddonPreferences):
         default=True,
     )
 
+    # ── Dev export settings ──────────────────────────────────────────────────
+    trim2_auto_export: bpy.props.BoolProperty(
+        name="Auto-export OBJ after Generate Trim",
+        description="Automatically export the generated trim as OBJ after each run",
+        default=False,
+    )
+    trim2_export_dir: bpy.props.StringProperty(
+        name="Export Directory",
+        description="Folder to export OBJ files into (defaults to blend file directory)",
+        subtype="DIR_PATH",
+        default="",
+    )
+
     def draw(self, context):
+        from . import __version__
         layout = self.layout
         layout.label(text="Preferences are in the FBX Toolkit N-panel.", icon="INFO")
         layout.label(text="Open the 3D Viewport, press N, select the FBX Toolkit tab.")
         layout.prop(self, "show_setup_on_new")
         layout.prop(self, "enable_primitives")
+        layout.separator()
+        layout.label(text="Dev: Trim2 Auto Export", icon="EXPORT")
+        layout.prop(self, "trim2_auto_export")
+        col = layout.column()
+        col.enabled = self.trim2_auto_export
+        col.prop(self, "trim2_export_dir")
+        layout.separator()
+        row = layout.row()
+        row.label(text=f"FBXMT v{__version__}", icon="CONSOLE")
+        op = layout.operator("wm.url_open", text="Documentation & Wiki", icon="URL")
+        op.url = "https://github.com/Karmacopper/fbx-mappers-toolkit/wiki"
 
 
 
@@ -249,6 +274,9 @@ class FBXMT_PT_Materials(Panel):
         island_row = layout.row()
         island_row.scale_y = 1.2
         island_row.operator("fbxmt.colour_islands", text="Auto-Colour Islands", icon="OUTLINER_OB_LATTICE")
+        detect_row = layout.row()
+        detect_row.scale_y = 1.2
+        detect_row.operator("fbxmt.auto_detect_wall_islands", text="Auto-Detect Wall Islands", icon="MOD_MESHDEFORM")
 
 
 # ─── Import ───────────────────────────────────────────────────────────────────
@@ -317,25 +345,25 @@ class FBXMT_PT_UVUnwrap(Panel):
 
         layout.separator()
 
-        # Disable unwrap if selected object is in Trim or Props collection
-        in_trim_or_props = False
+        # Disable unwrap if selected object is in Props collection only
+        in_props = False
         if obj:
             for col in obj.users_collection:
-                if col.name in ('Trim', 'Props'):
-                    in_trim_or_props = True
+                if col.name == 'Props':
+                    in_props = True
                     break
 
         row = layout.row()
         row.scale_y = 1.3
-        row.enabled = not in_trim_or_props
+        row.enabled = not in_props
         row.operator(
             "fbxmt.uv_unwrap",
             text="Unwrap Selected Faces" if context.mode == "EDIT_MESH"
                  else "Unwrap Selected Objects",
             icon="UV_DATA",
         )
-        if in_trim_or_props:
-            layout.label(text="Unwrap disabled for Trim/Props", icon="INFO")
+        if in_props:
+            layout.label(text="Unwrap disabled for Props", icon="INFO")
 
         # Smart Pack — hidden until ready
         # row = layout.row()
@@ -457,3 +485,92 @@ class FBXMT_PT_TrimGen(Panel):
         row3.scale_y = 1.4
         row3.enabled = in_edit
         row3.operator('fbxmt.generate_trim', text='Generate Trim', icon='MOD_SOLIDIFY')
+
+
+class FBXMT_PT_TrimGen2(Panel):
+    bl_space_type  = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_label       = "FBX Trim"
+    bl_category    = "FBX Toolkit"
+    bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 7
+    bl_options     = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout  = self.layout
+        props   = context.scene.fbxmt_props
+        in_edit = context.mode == 'EDIT_MESH'
+
+        # ── Profile (shared) ─────────────────────────────────────────────────
+        box = layout.box()
+        box.label(text='Profile', icon='EDGESEL')
+        col = box.column(align=True)
+        col.prop(props, 'trim_thickness', text='Thickness')
+        col.prop(props, 'trim_corner_chamfer', text='Chamfer')
+
+        layout.separator()
+
+        # ── Cover depths ─────────────────────────────────────────────────────
+        # Blue  = A face (floor/ceiling/ramp) — matches viewport overlay
+        # Yellow = B face (wall)              — matches viewport overlay
+        # Each relationship gets a box with A and B inputs labelled and
+        # visually separated so it's clear which covers which face.
+
+        def _ab_row(parent, label_a, prop_a, label_b, prop_b):
+            """Draw one A/B depth row with colour-coded labels."""
+            # A leg — blue tint via alert on a split column
+            col_a = parent.column(align=True)
+            row_a = col_a.row(align=True)
+            row_a.label(text=label_a, icon='MESH_PLANE')   # flat face
+            row_a.prop(props, prop_a, text='')
+            # B leg — yellow tint via alert
+            col_b = parent.column(align=True)
+            row_b = col_b.row(align=True)
+            row_b.alert = True                              # red/yellow tint
+            row_b.label(text=label_b, icon='MESH_GRID')    # wall face
+            row_b.prop(props, prop_b, text='')
+
+        # Wall / Floor
+        box_wf = layout.box()
+        row_h = box_wf.row()
+        row_h.label(text='Wall / Floor', icon='SNAP_FACE')
+        _ab_row(box_wf, 'A  Floor', 'trim_wf_floor_b',
+                        'B  Wall',  'trim_wf_wall_a')
+
+        # Wall / Ceiling
+        box_wc = layout.box()
+        box_wc.row().label(text='Wall / Ceiling', icon='SNAP_FACE')
+        _ab_row(box_wc, 'A  Ceiling', 'trim_wc_ceiling_b',
+                        'B  Wall',    'trim_wc_wall_a')
+
+        # Wall / Ramp
+        box_wr = layout.box()
+        box_wr.row().label(text='Wall / Ramp', icon='SNAP_FACE')
+        _ab_row(box_wr, 'A  Ramp',  'trim_wr_ramp_b',
+                        'B  Wall',  'trim_wr_wall_a')
+
+        # Wall / Wall
+        box_ww = layout.box()
+        box_ww.row().label(text='Wall / Wall', icon='SNAP_FACE')
+        box_ww.prop(props, 'trim_ww_wall', text='Depth')
+
+        layout.separator()
+
+        if not in_edit:
+            col3 = layout.column()
+            col3.label(text='Enter Edit Mode and', icon='INFO')
+            col3.label(text='select seam edges first.')
+
+        row = layout.row()
+        row.scale_y = 1.4
+        row.enabled = in_edit
+        row.operator('fbxmt.generate_trim2',
+                     text='Generate Trim',
+                     icon='MOD_SOLIDIFY')
+
+        # Dev: auto-export toggle (stored per-scene, survives reinstall)
+        row2 = layout.row(align=True)
+        row2.prop(props, 'trim2_auto_export', text='', icon='EXPORT')
+        sub = row2.row()
+        sub.enabled = props.trim2_auto_export
+        sub.prop(props, 'trim2_export_dir', text='')

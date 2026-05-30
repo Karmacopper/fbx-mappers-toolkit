@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "2.9.38"
+__version__ = "0.2.40.148"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -29,6 +29,8 @@ from .materials import (
     OT_FBXMT_Assign_To_Faces,
     OT_FBXMT_Select_By_Material,
     OT_FBXMT_Colour_Islands,
+    OT_FBXMT_Auto_Detect_Wall_Islands,
+    OT_FBXMT_Strip_Mesh,
     FBXMT_UL_AllMaterials,
     FBXMT_UL_BaseMaterials,
     FBXMT_UL_ChainMaterials,
@@ -37,6 +39,7 @@ from .materials import (
 )
 from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview, OT_FBXMT_SmartPack
 from .trim_gen import OT_FBXMT_Generate_Trim
+from .trim_gen2 import OT_FBXMT_Generate_Trim2
 from .props import FBXMT_GlobalPrefs, FBXMT_Props
 from .primitives import register_primitives, unregister_primitives
 from .project_setup import (
@@ -55,6 +58,10 @@ from .project_setup import (
     register as register_project_setup,
     unregister as unregister_project_setup,
 )
+from .grid import (
+    register as register_grid,
+    unregister as unregister_grid,
+)
 from .panel import (
     FBXMT_AddonPreferences,
     set_addon_id,
@@ -66,6 +73,7 @@ from .panel import (
     FBXMT_PT_UVUnwrap,
     FBXMT_PT_Export,
     FBXMT_PT_TrimGen,
+    FBXMT_PT_TrimGen2,
 )
 
 # Operators, Panels, PropertyGroups, and Menus must be registered manually.
@@ -96,6 +104,8 @@ classes = (
     OT_FBXMT_Assign_To_Faces,
     OT_FBXMT_Select_By_Material,
     OT_FBXMT_Colour_Islands,
+    OT_FBXMT_Auto_Detect_Wall_Islands,
+    OT_FBXMT_Strip_Mesh,
     OT_FBXMT_Import_FBX,
     OT_FBXMT_Import_FBX_Ask,
     OT_UT4_Import_FBX_Multi,
@@ -103,6 +113,7 @@ classes = (
     OT_FBXMT_UV_Unwrap,
     OT_FBXMT_SmartPack,
     OT_FBXMT_Generate_Trim,
+    OT_FBXMT_Generate_Trim2,
     OT_FBXMT_Save_Template,
     OT_FBXMT_Export,
     FBXMT_PT_Main,
@@ -111,6 +122,7 @@ classes = (
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
     FBXMT_PT_TrimGen,
+    FBXMT_PT_TrimGen2,
     FBXMT_PT_Export,
 )
 
@@ -148,6 +160,7 @@ def register():
     bpy.types.Scene.fbxmt_prefs_global = bpy.props.PointerProperty(type=FBXMT_GlobalPrefs)
     register_material_props()
     register_project_setup()
+    register_grid()
     register_handlers()
     bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_draw_trim_context_menu)
     bpy.types.VIEW3D_MT_edit_mesh.append(_draw_trim_context_menu)
@@ -165,6 +178,7 @@ def unregister():
     bpy.types.VIEW3D_MT_edit_mesh.remove(_draw_trim_context_menu)
     unregister_primitives()
     unregister_handlers()
+    unregister_grid()
     unregister_project_setup()
     unregister_material_props()
     for c in reversed(classes):

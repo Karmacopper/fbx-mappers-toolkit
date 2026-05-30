@@ -28,8 +28,7 @@ from .panel import _draw_preset_lock_ticker
 
 # ─── Constants ────────────────────────────────────────────────────────────────
 
-# Surface materials that get the split tile (top=parent, bottom=island steps) in dialog preview
-_SPLIT_TILE_MATS = {'M_FBXMT_Floor', 'M_FBXMT_Ceiling', 'M_FBXMT_Wall'}
+# (split tile preview removed — tiles show full material only)
 
 # 8 visible materials in display order
 ALL_DISPLAY_MATERIAL_NAMES = [
@@ -827,12 +826,27 @@ def _build_swatch_image(prefs, name):
     _b_sat = _safe_float(prefs, 'color_b_saturation', 0.6)
     _b_val = _safe_float(prefs, 'color_b_value', 0.35)
 
-    for row_idx, (_, prop_a, label) in enumerate(_SWATCH_MATS):
+    import colorsys as _cs
+    for row_idx, (slot, prop_a, label) in enumerate(_SWATCH_MATS):
         y0 = h - (row_idx + 1) * _SWATCH_ROW   # top-down order
         y1 = y0 + _SWATCH_ROW
 
-        col_a = tuple(getattr(prefs, prop_a, (0.5, 0.5, 0.5, 1.0))[:3])
-        col_b = _rcb(col_a, _b_off, _b_sat, _b_val)
+        col_a_raw = tuple(getattr(prefs, prop_a, (0.5, 0.5, 0.5, 1.0))[:3])
+
+        if slot == 'island':
+            # Island A: wall hue with island-specific sat/val
+            h_i, _l, _s = _cs.rgb_to_hls(*col_a_raw)
+            isl_sat = _safe_float(prefs, 'island_marker_saturation', 0.6)
+            isl_val = _safe_float(prefs, 'island_marker_value', 0.50)
+            col_a = _cs.hls_to_rgb(h_i, isl_val, isl_sat)
+            # Island B: island-specific B params
+            isl_b_off = getattr(prefs, 'island_marker_b_hue_offset', '0')
+            isl_b_sat = _safe_float(prefs, 'island_marker_b_saturation', 0.6)
+            isl_b_val = _safe_float(prefs, 'island_marker_b_value', 0.35)
+            col_b = _rcb(col_a, isl_b_off, isl_b_sat, isl_b_val)
+        else:
+            col_a = col_a_raw
+            col_b = _rcb(col_a, _b_off, _b_sat, _b_val)
 
         # A square
         ax0 = _SWATCH_LABEL_W
@@ -1470,7 +1484,7 @@ class FBXMT_OT_ProjectSetup(Operator):
             # Island replaces the old transparent spacers — tracks Wall so colours match
             ramp_swatch_row = col_left.row(align=True)
             for mat_label, a_img_name in (
-                ('I',  '__fbxmt_swatch_wall'),
+                ('I',  '__fbxmt_swatch_island'),
                 ('RF', '__fbxmt_swatch_ramp_floor'),
                 ('RC', '__fbxmt_swatch_ramp_ceiling'),
             ):
@@ -1621,8 +1635,8 @@ class FBXMT_OT_ProjectSetup(Operator):
             col_left.separator(factor=0.5)
             classify_box = col_left.box()
             classify_box.label(text='Classification:', icon='SORTSIZE')
-            classify_box.prop(props, 'uv_floor_threshold', text='Floor Angle')
-            classify_box.prop(props, 'ramp_threshold',     text='Ramp Angle')
+            classify_box.prop(props, 'ramp_wall_threshold', text='Floor Angle')
+            classify_box.prop(props, 'floor_ramp_threshold',     text='Ramp Angle')
 
             # ── RIGHT: Presets ────────────────────────────────────────────────
             preset_box_outer = col_right.box()
@@ -1659,54 +1673,6 @@ class FBXMT_OT_ProjectSetup(Operator):
 
 
 # ─── Modal bake operator ─────────────────────────────────────────────────────
-
-def _composite_island_steps(img, prefs, checker_scale, mat_name):
-    """Overwrite the bottom half of a tile with the middle island sub-material.
-
-    Renders M_FBXMT_Island_{Floor|Ceil|Wall}_03 (the centre lightness step)
-    directly so the preview exactly matches what's in the viewport.
-    """
-    _MAT_TO_ISLAND_MID = {
-        'M_FBXMT_Floor':   'M_FBXMT_Island_Floor_03',
-        'M_FBXMT_Ceiling': 'M_FBXMT_Island_Ceil_03',
-        'M_FBXMT_Wall':    'M_FBXMT_Island_Wall_03',
-    }
-    island_mat_name = _MAT_TO_ISLAND_MID.get(mat_name)
-    if not island_mat_name:
-        return
-
-    try:
-        size = img.size[0]
-        half = size // 2
-
-        # Render the island sub-material at the same size
-        island_img = _render_tile(island_mat_name, bpy.context, size=size, no_apex_lines=True)
-        if island_img is None:
-            return
-
-        # Read both pixel arrays
-        base_px   = np.empty(size * size * 4, dtype=np.float32)
-        island_px = np.empty(size * size * 4, dtype=np.float32)
-        img.pixels.foreach_get(base_px)
-        island_img.pixels.foreach_get(island_px)
-
-        base_px   = base_px.reshape(size, size, 4)
-        island_px = island_px.reshape(size, size, 4)
-
-        # Overwrite bottom half of base with island render
-        base_px[:half] = island_px[:half]
-
-        img.pixels.foreach_set(base_px.ravel())
-        img.update()
-
-    except Exception as e:
-        print(f'[FBXMT] _composite_island_steps failed for {mat_name}: {e}')
-    finally:
-        if island_img:
-            try:
-                bpy.data.images.remove(island_img)
-            except Exception:
-                pass
 
 
 def _composite_apex_lines(img, prefs, checker_scale, size):
@@ -1817,7 +1783,7 @@ def _composite_apex_lines(img, prefs, checker_scale, size):
 
 def _composite_corner_marks(img, prefs, size, checker_scale):
     """Reapply corner reticle marks on top of an already-composited image.
-    Called after _composite_island_steps so marks are always last in draw order.
+    Always drawn last so marks are on top of the checker.
     """
     try:
 
@@ -2068,12 +2034,6 @@ def _render_tile(mat_name, context, size=None, split=False, no_apex_lines=False)
         img.name = img_name
         img.update()
 
-        # Composite island B steps for split preview only.
-        # Corner marks are rendered directly by the node tree via EEVEE — no numpy composite needed.
-        checker_scale = prefs.checker_scale if prefs else 4
-        if split and mat_name in _SPLIT_TILE_MATS:
-            _composite_island_steps(img, prefs, checker_scale, mat_name)
-
         # Apex position lines — drawn LAST so they're always on top
         if not no_apex_lines:
             _composite_apex_lines(img, prefs, checker_scale, render_size)
@@ -2128,6 +2088,55 @@ def _build_colour_swatches(prefs):
             img = bpy.data.images.new(spacer_name, width=32, height=32, alpha=True)
         px = np.zeros((32, 32, 4), dtype=np.float32)
         img.pixels.foreach_set(px.ravel())
+        try:
+            img.preview.reload()
+        except Exception:
+            pass
+
+    # Island swatch — wall hue, island sat/val, island B params
+    import colorsys as _cs
+    _wall_a_raw = tuple(getattr(prefs, 'color_wall_a', (0.5, 0.5, 0.5, 1.0))[:3])
+    _h_isl, _l_isl, _s_isl = _cs.rgb_to_hls(*_wall_a_raw)
+    _isl_sat = _safe_float(prefs, 'island_marker_saturation', 0.6)
+    _isl_val = _safe_float(prefs, 'island_marker_value', 0.50)
+    _col_a_island = _cs.hls_to_rgb(_h_isl, _isl_val, _isl_sat)
+    _isl_b_off = getattr(prefs, 'island_marker_b_hue_offset', '0')
+    _isl_b_sat = _safe_float(prefs, 'island_marker_b_saturation', 0.6)
+    _isl_b_val = _safe_float(prefs, 'island_marker_b_value', 0.35)
+    _col_b_island = _resolve_color_b(_col_a_island, _isl_b_off, _isl_b_sat, _isl_b_val)
+
+    for img_name, rgb, glyph in (
+        ('__fbxmt_swatch_island',   _col_a_island, 'A'),
+        ('__fbxmt_swatch_b_island', _col_b_island, 'B'),
+    ):
+        r, g, b = rgb[0], rgb[1], rgb[2]
+        img = bpy.data.images.get(img_name)
+        if img and (img.size[0] != 32 or img.size[1] != 32):
+            bpy.data.images.remove(img)
+            img = None
+        if img is None:
+            img = bpy.data.images.new(img_name, width=32, height=32, alpha=False)
+        rl = min(1.0, max(0.0, r)) ** (1/2.2)
+        gl = min(1.0, max(0.0, g)) ** (1/2.2)
+        bl_v = min(1.0, max(0.0, b)) ** (1/2.2)
+        px = np.full((32, 32, 4), 1.0, dtype=np.float32)
+        px[:, :, 0] = rl
+        px[:, :, 1] = gl
+        px[:, :, 2] = bl_v
+        # Stamp glyph
+        glyph_col = (1.0 - rl, 1.0 - gl, 1.0 - bl_v)
+        glyph_rows = _FONT_5X7.get(glyph, _FONT_5X7[' '])
+        ox, oy = 2, 32 - 2 - 7
+        for row_idx, row_bits in enumerate(glyph_rows):
+            py = oy + (6 - row_idx)
+            for col_idx, bit in enumerate(row_bits):
+                if bit == '1':
+                    px_x = ox + col_idx
+                    if 0 <= py < 32 and 0 <= px_x < 32:
+                        px[py, px_x, :3] = glyph_col
+        img.pixels.foreach_set(px.ravel())
+        img.update()
+        img.preview_ensure()
         try:
             img.preview.reload()
         except Exception:
@@ -2403,10 +2412,17 @@ class FBXMT_OT_BakeAllModal(Operator):
             if img:
                 # Rename image to match real material name for display
                 img.name = f'__tile_{mat_name}'
+                img.preview_ensure()
+                try:
+                    img.preview.reload()
+                except Exception:
+                    pass
                 # Tag all areas for redraw — dialog is a separate region from context.area
-                if context.window:
-                    for area in context.window.screen.areas:
+                for window in context.window_manager.windows:
+                    for area in window.screen.areas:
                         area.tag_redraw()
+                        for region in area.regions:
+                            region.tag_redraw()
         else:
             print(f'[FBXMT] material not found: {render_name}')
 
@@ -2429,9 +2445,14 @@ class FBXMT_OT_BakeAllModal(Operator):
 
         # Switch preview to sheet view and force redraw of all areas including dialog
         context.scene.fbxmt_preview_mode = 'SHEET'
-        if context.window:
-            for area in context.window.screen.areas:
-                area.tag_redraw()
+        try:
+            for window in context.window_manager.windows:
+                for area in window.screen.areas:
+                    area.tag_redraw()
+                    for region in area.regions:
+                        region.tag_redraw()
+        except Exception:
+            pass
 
         self.report({'INFO'}, f'FBXMT preview tiles built — {self._total} materials')
         return {'FINISHED'}

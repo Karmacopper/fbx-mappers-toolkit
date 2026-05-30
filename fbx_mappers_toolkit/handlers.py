@@ -1,4 +1,5 @@
 import bpy
+import bmesh
 from bpy.app.handlers import persistent
 
 
@@ -50,10 +51,49 @@ def on_load_post(filepath):
         pass
 
 
+@persistent
+def on_depsgraph_update_post(scene, depsgraph):
+    """Update the A/B face overlay whenever the edit-mode selection changes."""
+    try:
+        from .trim_overlay import build_overlay, clear_overlay
+
+        ctx = bpy.context
+        if ctx is None:
+            return
+        obj = ctx.active_object
+        if obj is None or obj.type != 'MESH' or ctx.mode != 'EDIT_MESH':
+            clear_overlay()
+            # Redraw so the cleared overlay takes effect
+            for area in ctx.screen.areas if ctx.screen else []:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+            return
+
+        bm = bmesh.from_edit_mesh(obj.data)
+        selected = [e for e in bm.edges if e.select]
+        if not selected:
+            clear_overlay()
+        else:
+            build_overlay(obj, selected)
+
+        for area in ctx.screen.areas if ctx.screen else []:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+    except Exception:
+        pass
+
+
 def register_handlers():
+    from .trim_overlay import register_overlay
+    register_overlay()
     bpy.app.handlers.load_post.append(on_load_post)
+    bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update_post)
 
 
 def unregister_handlers():
+    from .trim_overlay import unregister_overlay
+    unregister_overlay()
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
+    if on_depsgraph_update_post in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(on_depsgraph_update_post)

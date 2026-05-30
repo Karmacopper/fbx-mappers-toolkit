@@ -854,6 +854,11 @@ def rebuild_fbxmt_materials():
     global _materials_built
     prefs = _get_prefs()
 
+    # Always re-derive colour_*_a props from anchor notches before reading them.
+    # This ensures rebuild is consistent after file reload regardless of what
+    # was cached in color_*_a at save time.
+    _derive_colours_from_anchor(prefs)
+
     # Clear island sub-material node trees to prevent stale cached colours
     for name in ISLAND_SUB_NAMES:
         mat = bpy.data.materials.get(name)
@@ -938,14 +943,20 @@ def rebuild_fbxmt_materials():
             _get_parent_b('ceiling'), # group 2: Ceil_xx  (i%3==2)
         ]
 
+        # Value steps spread across the 5 slots within each group
+        # Slot 0 = darkest, slot 4 = lightest — evenly spaced around isl_val
+        _step_offsets = [-0.20, -0.10, 0.0, +0.10, +0.20]
+
         for i, name in enumerate(ISLAND_SUB_NAMES):
             mat      = bpy.data.materials.get(name) or bpy.data.materials.new(name=name)
-            group    = i % 3  # Wall(0), Floor(1), Ceil(2)
+            group    = i % 3       # Wall(0), Floor(1), Ceil(2)
+            slot     = i // 3      # 0-4 within each group
             parent_b = _parent_b_cols[group]
 
-            # Island A = parent B hue with island sat/val
-            h, l, s  = colorsys.rgb_to_hls(*parent_b)
-            island_a = colorsys.hls_to_rgb(h, isl_val, isl_sat)
+            # Island A = parent B hue with island sat/val + per-slot value step
+            h, _l, _s = colorsys.rgb_to_hls(*parent_b)
+            stepped_val = max(0.05, min(0.95, isl_val + _step_offsets[slot]))
+            island_a = colorsys.hls_to_rgb(h, stepped_val, isl_sat)
 
             # Island B = derived from Island A via island B modifiers
             island_b = _resolve_color_b(island_a, isl_b_offset, isl_b_sat, isl_b_val)
@@ -966,6 +977,16 @@ def rebuild_fbxmt_materials():
             rebuilt.append(name)
     except Exception as e:
         print(f'[FBXMT] Island rebuild failed: {type(e).__name__}: {e}')
+
+    # Force redraw of all UI regions so tile images update in the N-panel list
+    # without needing to open the setup window
+    try:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                for region in area.regions:
+                    region.tag_redraw()
+    except Exception:
+        pass
 
     _materials_built = True
     return rebuilt
@@ -1176,8 +1197,8 @@ class OT_FBXMT_Assign_Materials(Operator):
             ensure_fbxmt_materials()
 
             props               = context.scene.fbxmt_props
-            floor_threshold_dot = math.cos(math.radians(props.uv_floor_threshold))
-            ramp_threshold_dot  = math.cos(math.radians(props.ramp_threshold))
+            floor_threshold_dot = math.cos(math.radians(props.ramp_wall_threshold))
+            floor_ramp_threshold_dot  = math.cos(math.radians(props.floor_ramp_threshold))
             z_axis              = Vector((0.0, 0.0, 1.0))
             edit_mode           = context.mode == 'EDIT_MESH'
 
@@ -1226,7 +1247,7 @@ class OT_FBXMT_Assign_Materials(Operator):
                     world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
                     dot_z        = abs(world_normal.dot(z_axis))
 
-                    if dot_z >= ramp_threshold_dot:
+                    if dot_z >= floor_ramp_threshold_dot:
                         mat_name = 'M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling'
                     elif dot_z >= floor_threshold_dot:
                         mat_name = 'M_FBXMT_Ramp_Floor' if world_normal.z > 0 else 'M_FBXMT_Ramp_Ceiling'
@@ -1656,6 +1677,38 @@ class OT_FBXMT_Clear_Scene_Materials(Operator):
         return {'FINISHED'}
 
 
+
+class OT_FBXMT_Strip_Mesh(Operator):
+    """Strip all UV maps and all material slots from selected objects.
+
+    Use to reset imported master meshes to a clean state before running
+    full prep. Does not affect mesh geometry.
+    """
+    bl_idname  = 'fbxmt.strip_mesh'
+    bl_label   = 'Strip UVs & Materials'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(obj.type == 'MESH' for obj in context.selected_objects)
+
+    def execute(self, context):
+        stripped = 0
+        for obj in context.selected_objects:
+            if obj.type != 'MESH':
+                continue
+            mesh = obj.data
+            # Strip UV maps
+            while mesh.uv_layers:
+                mesh.uv_layers.remove(mesh.uv_layers[0])
+            # Strip all material slots
+            mesh.materials.clear()
+            mesh.update()
+            stripped += 1
+        self.report({'INFO'}, f'Stripped UVs & materials from {stripped} object(s)')
+        return {'FINISHED'}
+
+
 class FBXMT_MT_Clear_Menu(bpy.types.Menu):
     bl_idname = 'FBXMT_MT_Clear_Menu'
     bl_label  = 'Clear'
@@ -1667,6 +1720,7 @@ class FBXMT_MT_Clear_Menu(bpy.types.Menu):
         layout.label(text='Selected Objects:')
         layout.operator('fbxmt.clear_mapper_materials', text='Clear Mapper Materials',  icon='MATERIAL')
         layout.operator('fbxmt.clear_all_materials',    text='Clear All Materials',     icon='X')
+        layout.operator('fbxmt.strip_mesh',             text='Strip UVs & Materials',   icon='BRUSH_DATA')
         layout.separator()
         layout.operator('fbxmt.clear_scene_materials',  text='Clear Scene Materials',   icon='TRASH')
 
@@ -1789,7 +1843,7 @@ class OT_FBXMT_Colour_Islands(Operator):
 
             # ── Step 2b: determine group (Floor/Ceil/Wall) per component from normals ──
             props      = context.scene.fbxmt_props if hasattr(context.scene, 'fbxmt_props') else None
-            thresh_deg = props.uv_floor_threshold if props else 45.0
+            thresh_deg = props.ramp_wall_threshold if props else 45.0
             thresh_dot = math.cos(math.radians(thresh_deg))
             world_mat  = obj.matrix_world
             z_axis     = Vector((0.0, 0.0, 1.0))
@@ -1875,6 +1929,206 @@ class OT_FBXMT_Colour_Islands(Operator):
         self.report({'INFO'}, f'Coloured {total_coloured} face(s) across {n_comp} component(s)')
         return {'FINISHED'}
 
+
+
+# ─── Auto-detect wall island runs ────────────────────────────────────────────
+
+class OT_FBXMT_Auto_Detect_Wall_Islands(Operator):
+    """Detect same-size connected wall face runs and mark them as islands.
+
+    Walks wall-classified faces on the active object. Groups connected faces
+    whose area stays within tolerance and whose normals stay within the break
+    angle. Each qualifying group (2+ faces) is assigned M_FBXMT_Island and
+    the auto-colourer is fired. Singleton or non-matching wall faces are
+    assigned M_FBXMT_Trim as a visual flag and reported.
+
+    Run in Edit mode to see results immediately.
+    """
+    bl_idname  = 'fbxmt.auto_detect_wall_islands'
+    bl_label   = 'Auto-Detect Wall Islands'
+    bl_options = {'REGISTER', 'UNDO'}
+
+    break_angle_deg: bpy.props.FloatProperty(
+        name        = 'Break Angle',
+        description = 'Normal deviation between adjacent wall faces that starts a new island',
+        default     = 45.0,
+        min         = 5.0,
+        max         = 170.0,
+        step        = 5,
+        precision   = 1,
+    )
+
+    area_tolerance: bpy.props.FloatProperty(
+        name        = 'Area Tolerance',
+        description = 'Maximum fractional area difference allowed within a run (0.002 = 0.2%%)',
+        default     = 0.002,
+        min         = 0.0,
+        max         = 0.1,
+        precision   = 4,
+    )
+
+    @classmethod
+    def poll(cls, context):
+        return (
+            context.mode == 'EDIT_MESH'
+            and context.active_object is not None
+            and context.active_object.type == 'MESH'
+        )
+
+    def execute(self, context):
+        import math as _math
+        from mathutils import Vector as _Vector
+
+        obj  = context.active_object
+        mesh = obj.data
+
+        # Ensure required materials exist
+        ensure_fbxmt_materials()
+        ensure_island_materials()
+
+        bm = bmesh.from_edit_mesh(mesh)
+        bm.faces.ensure_lookup_table()
+
+        world_mat   = obj.matrix_world
+        z_axis      = _Vector((0.0, 0.0, 1.0))
+
+        props      = context.scene.fbxmt_props if hasattr(context.scene, 'fbxmt_props') else None
+        thresh_deg = props.ramp_wall_threshold if props else 45.0
+        thresh_dot = _math.cos(_math.radians(thresh_deg))
+
+        break_cos   = _math.cos(_math.radians(self.break_angle_deg))
+        area_tol    = self.area_tolerance
+
+        slot_names  = [m.name if m else None for m in mesh.materials]
+
+        # ── Collect wall faces ────────────────────────────────────────────────
+        wall_mat_names = {
+            'M_FBXMT_Wall', 'M_FBXMT_Island',
+            *[n for n in ISLAND_SUB_NAMES if 'Wall' in n],
+        }
+
+        def _is_wall(face):
+            world_normal = (world_mat.to_3x3() @ face.normal).normalized()
+            dot_z = abs(world_normal.dot(z_axis))
+            return dot_z < thresh_dot
+
+        wall_faces = [f for f in bm.faces if _is_wall(f)]
+
+        if not wall_faces:
+            self.report({'WARNING'}, 'No wall faces found on active object')
+            return {'CANCELLED'}
+
+        # ── Flood-fill into runs ──────────────────────────────────────────────
+        # Break conditions:
+        #   - Normal deviation from seed face > break_angle_deg
+        #   - Area deviation from seed face area > area_tol
+        wall_set = set(f.index for f in wall_faces)
+        visited  = set()
+        groups   = []   # list of lists of bmesh faces
+
+        for seed in wall_faces:
+            if seed.index in visited:
+                continue
+
+            seed_normal = (world_mat.to_3x3() @ seed.normal).normalized()
+            seed_area   = seed.calc_area()
+
+            group   = []
+            queue   = [seed]
+
+            while queue:
+                face = queue.pop()
+                if face.index in visited:
+                    continue
+                visited.add(face.index)
+                group.append(face)
+
+                face_normal = (world_mat.to_3x3() @ face.normal).normalized()
+                face_area   = face.calc_area()
+
+                for edge in face.edges:
+                    for nb in edge.link_faces:
+                        if nb.index not in wall_set or nb.index in visited:
+                            continue
+                        nb_normal = (world_mat.to_3x3() @ nb.normal).normalized()
+                        nb_area   = nb.calc_area()
+
+                        # Normal break — neighbour vs immediate face (local continuity)
+                        # not vs seed, so curves accumulate correctly around a loop
+                        if nb_normal.dot(face_normal) < break_cos:
+                            continue
+                        # Area break — still vs seed face (drift = mesh error signal)
+                        if seed_area > 0:
+                            area_diff = abs(nb_area - seed_area) / seed_area
+                            if area_diff > area_tol:
+                                continue
+
+                        queue.append(nb)
+
+            groups.append(group)
+
+        # ── Ensure marker and trim slots exist ────────────────────────────────
+        existing_names = {m.name for m in mesh.materials if m}
+
+        def _ensure_slot(mat_name):
+            if mat_name not in existing_names:
+                mat = bpy.data.materials.get(mat_name)
+                if mat:
+                    mesh.materials.append(mat)
+                    existing_names.add(mat_name)
+            # Refresh slot_names after possible append
+            return [m.name if m else None for m in mesh.materials]
+
+        # ── Assign materials ──────────────────────────────────────────────────
+        island_groups  = []
+        flagged_faces  = []
+        slot_names     = list(slot_names)
+
+        for group in groups:
+            if len(group) >= 2:
+                # Multi-face run → island marker
+                slot_names = _ensure_slot(ISLAND_MARKER_NAME)
+                slot_idx   = slot_names.index(ISLAND_MARKER_NAME)
+                for face in group:
+                    face.material_index = slot_idx
+                island_groups.append(group)
+            else:
+                # Singleton — only flag as Trim if truly isolated from all other
+                # wall faces (i.e. no wall neighbours at all). A singleton that
+                # sits at the boundary of a straight wall section is legitimate
+                # wall geometry, not a mesh error.
+                face       = group[0]
+                has_wall_nb = any(
+                    nb.index in wall_set
+                    for edge in face.edges
+                    for nb in edge.link_faces
+                    if nb.index != face.index
+                )
+                if not has_wall_nb:
+                    slot_names = _ensure_slot('M_FBXMT_Trim')
+                    if 'M_FBXMT_Trim' in slot_names:
+                        slot_idx = slot_names.index('M_FBXMT_Trim')
+                        face.material_index = slot_idx
+                    flagged_faces.append(face)
+                # else: leave as M_FBXMT_Wall — boundary face of a straight section
+
+        bmesh.update_edit_mesh(mesh)
+        mesh.update()
+
+        n_islands = len(island_groups)
+        n_flagged = len(flagged_faces)
+
+        # ── Fire auto-colourer ────────────────────────────────────────────────
+        if n_islands > 0:
+            bpy.ops.fbxmt.colour_islands('EXEC_DEFAULT')
+
+        msg = f'Auto-detected {n_islands} wall island group(s)'
+        if n_flagged:
+            msg += f', {n_flagged} unmatched face(s) flagged as Trim — check mesh'
+            print(f'[FBXMT] Auto-detect: {n_flagged} unmatched wall face(s) on "{obj.name}" flagged as Trim')
+
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
 
 # ─── Texel density operator ──────────────────────────────────────────────
 

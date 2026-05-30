@@ -586,7 +586,7 @@ class OT_FBXMT_UV_Unwrap(Operator):
 
     def execute(self, context):
         props               = context.scene.fbxmt_props
-        floor_threshold_dot = math.cos(math.radians(props.uv_floor_threshold))
+        floor_threshold_dot = math.cos(math.radians(props.ramp_wall_threshold))
         edit_mode           = context.mode == 'EDIT_MESH'
 
         if edit_mode:

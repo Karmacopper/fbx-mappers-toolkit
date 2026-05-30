@@ -91,8 +91,8 @@ def get_newly_imported(before_names, import_type):
 
         scene               = bpy.context.scene
         props               = scene.fbxmt_props
-        floor_threshold_dot = math.cos(math.radians(props.uv_floor_threshold))
-        ramp_threshold_dot  = math.cos(math.radians(props.ramp_threshold))
+        floor_threshold_dot = math.cos(math.radians(props.ramp_wall_threshold))
+        floor_ramp_threshold_dot  = math.cos(math.radians(props.floor_ramp_threshold))
         z_axis              = _Vector((0.0, 0.0, 1.0))
 
         _mat_module._suppress_handler = True
@@ -142,7 +142,7 @@ def get_newly_imported(before_names, import_type):
                         continue
                     world_normal = (world_matrix.to_3x3() @ face.normal).normalized()
                     dot_z        = abs(world_normal.dot(z_axis))
-                    if dot_z >= ramp_threshold_dot:
+                    if dot_z >= floor_ramp_threshold_dot:
                         mn = 'M_FBXMT_Floor' if world_normal.z > 0 else 'M_FBXMT_Ceiling'
                     elif dot_z >= floor_threshold_dot:
                         mn = 'M_FBXMT_Ramp_Floor' if world_normal.z > 0 else 'M_FBXMT_Ramp_Ceiling'
@@ -154,7 +154,91 @@ def get_newly_imported(before_names, import_type):
                 bm.free()
                 mesh.update()
 
-                # 5. UV unwrap — ensure mesh is fully evaluated before unwrapping
+                # 5. Auto-detect wall island runs
+                # Runs inline (Object mode bmesh) — same logic as the operator
+                # but without requiring Edit mode context.
+                try:
+                    import math as _math
+                    from .materials import (
+                        ISLAND_MARKER_NAME, ISLAND_SUB_NAMES,
+                        ensure_island_materials,
+                        OT_FBXMT_Colour_Islands,
+                    )
+                    ensure_island_materials()
+
+                    _break_cos  = _math.cos(_math.radians(45.0))
+                    _area_tol   = 0.002
+                    _world_mat  = obj.matrix_world
+
+                    bm2 = _bmesh.new()
+                    bm2.from_mesh(mesh)
+                    bm2.faces.ensure_lookup_table()
+
+                    def _is_wall_face(f):
+                        wn = (_world_mat.to_3x3() @ f.normal).normalized()
+                        return abs(wn.dot(z_axis)) < floor_threshold_dot
+
+                    wall_set2 = set(f.index for f in bm2.faces if _is_wall_face(f))
+                    visited2  = set()
+                    groups2   = []
+
+                    for seed in (bm2.faces[i] for i in wall_set2):
+                        if seed.index in visited2:
+                            continue
+                        seed_normal = (_world_mat.to_3x3() @ seed.normal).normalized()
+                        seed_area   = seed.calc_area()
+                        group2      = []
+                        queue2      = [seed]
+                        while queue2:
+                            face2 = queue2.pop()
+                            if face2.index in visited2:
+                                continue
+                            visited2.add(face2.index)
+                            group2.append(face2)
+                            face2_normal = (_world_mat.to_3x3() @ face2.normal).normalized()
+                            for edge2 in face2.edges:
+                                for nb2 in edge2.link_faces:
+                                    if nb2.index not in wall_set2 or nb2.index in visited2:
+                                        continue
+                                    nb2_normal = (_world_mat.to_3x3() @ nb2.normal).normalized()
+                                    nb2_area   = nb2.calc_area()
+                                    if nb2_normal.dot(face2_normal) < _break_cos:
+                                        continue
+                                    if seed_area > 0:
+                                        if abs(nb2_area - seed_area) / seed_area > _area_tol:
+                                            continue
+                                    queue2.append(nb2)
+                        groups2.append(group2)
+
+                    # Ensure island marker slot exists
+                    existing2 = {m.name for m in mesh.materials if m}
+                    if ISLAND_MARKER_NAME not in existing2:
+                        marker_mat = bpy.data.materials.get(ISLAND_MARKER_NAME)
+                        if marker_mat:
+                            mesh.materials.append(marker_mat)
+                    slot_names2 = [m.name if m else None for m in mesh.materials]
+
+                    if ISLAND_MARKER_NAME in slot_names2:
+                        marker_idx2 = slot_names2.index(ISLAND_MARKER_NAME)
+                        for group2 in groups2:
+                            if len(group2) >= 2:
+                                for face2 in group2:
+                                    face2.material_index = marker_idx2
+
+                    bm2.to_mesh(mesh)
+                    bm2.free()
+                    mesh.update()
+
+                    # Run graph colourer in Object mode context
+                    bpy.ops.object.select_all(action='DESELECT')
+                    obj.select_set(True)
+                    bpy.context.view_layer.objects.active = obj
+                    bpy.ops.fbxmt.colour_islands('EXEC_DEFAULT')
+
+                except Exception as _e:
+                    print(f'[FBXMT] Auto-detect wall islands failed on "{obj.name}": {_e}')
+
+                # 6. UV unwrap — ensure mesh is fully evaluated before unwrapping
                 obj.data.update()
                 bpy.context.view_layer.update()
                 unwrap_mesh(obj.data, obj.matrix_world, floor_threshold_dot)

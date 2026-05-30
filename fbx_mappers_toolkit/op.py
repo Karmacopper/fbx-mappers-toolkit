@@ -93,7 +93,7 @@ class OT_FBXMT_Export(Operator):
 
             # Auto-unwrap if no diffuse UV map exists yet
             if not src_obj.data.uv_layers.get("UVMap"):
-                floor_dot   = math.cos(math.radians(props.uv_floor_threshold))
+                floor_dot   = math.cos(math.radians(props.ramp_wall_threshold))
                 unwrap_count = unwrap_mesh(src_obj.data, src_obj.matrix_world, floor_dot)
                 if unwrap_count > 0:
                     self.report({'INFO'}, f"{obj_name}: auto-unwrapped {unwrap_count} face(s)")

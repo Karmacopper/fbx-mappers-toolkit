@@ -292,6 +292,16 @@ class FBXMT_Props(PropertyGroup):
         maxlen=1024,
         subtype="DIR_PATH",
     )
+    trim2_auto_export: bpy.props.BoolProperty(
+        name="Auto-export OBJ after Generate Trim",
+        default=False,
+    )
+    trim2_export_dir: bpy.props.StringProperty(
+        name="Trim Export Directory",
+        description="Folder to export trim OBJ files into",
+        subtype="DIR_PATH",
+        default="",
+    )
     geo_texel_density: bpy.props.IntProperty(
         name="Texel Density",
         description="Texel density for Geo collection objects (texels/m). 1024tx/m = 1m tile.",
@@ -333,13 +343,13 @@ class FBXMT_Props(PropertyGroup):
         ),
         default=False,
     )
-    uv_floor_threshold: bpy.props.FloatProperty(
+    ramp_wall_threshold: bpy.props.FloatProperty(
         name="Floor Angle",
         description="Faces within this angle of horizontal are treated as floors/ceilings (max traversable ramp in UT is 45°)",
         default=45.0,
         min=0.0, max=89.0, step=5, precision=1,
     )
-    ramp_threshold: bpy.props.FloatProperty(
+    floor_ramp_threshold: bpy.props.FloatProperty(
         name="Ramp Angle",
         description="Faces between this angle and Floor Angle are treated as ramps. Below this angle = Wall.",
         default=15.0,
@@ -442,4 +452,71 @@ class FBXMT_Props(PropertyGroup):
         name='Chamfer D-F',
         description='Chamfer the D→F cap face (second arm end)',
         default=False,
+    )
+
+    # ── Trim Generation 2 (dihedral) ─────────────────────────────────────────
+    # These props are separate from the original trim_* props.
+    # The original props are untouched and still drive fbxmt.generate_trim.
+
+    trim_depth: bpy.props.FloatProperty(
+        name='Arm Cover',
+        description='How far each foot extends along its face from the seam edge',
+        default=0.5, min=0.01, max=10.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+
+    # ── FBX Trim cover depths per relationship ────────────────────────────
+    # Wall/Floor
+    trim_wf_wall_a: bpy.props.FloatProperty(
+        name='Wall', description='Wall arm depth (A)',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    trim_wf_floor_b: bpy.props.FloatProperty(
+        name='Floor', description='Floor arm depth (B)',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    # Wall/Ceiling
+    trim_wc_wall_a: bpy.props.FloatProperty(
+        name='Wall', description='Wall arm depth (A)',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    trim_wc_ceiling_b: bpy.props.FloatProperty(
+        name='Ceiling', description='Ceiling arm depth (B)',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    # Wall/Ramp
+    trim_wr_wall_a: bpy.props.FloatProperty(
+        name='Wall', description='Wall arm depth (A)',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    trim_wr_ramp_b: bpy.props.FloatProperty(
+        name='Ramp', description='Ramp arm depth (B)',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    # Wall/Wall
+    trim_ww_wall: bpy.props.FloatProperty(
+        name='Wall', description='Both wall arm depths',
+        default=0.5, min=0.001, max=10.0, unit='LENGTH', step=5, precision=3)
+    trim_end_chamfer: bpy.props.EnumProperty(
+        name='End Chamfer',
+        description='Chamfer style at chain terminals (v3/v7 foot tip)',
+        items=[
+            ('NONE', 'None', 'Square foot end — no chamfer'),
+            ('HALF', 'Half', 'v3/v7 move halfway toward nose shoulder'),
+            ('FULL', 'Full', 'v3/v7 move fully to nose shoulder (45° bevel)'),
+        ],
+        default='NONE',
+    )
+    trim_corner_chamfer: bpy.props.EnumProperty(
+        name='Corner Chamfer',
+        description='Nose chamfer style — controls shoulder depth and nose flattening',
+        items=[
+            ('NONE', 'None',  'Sharp nose tip — no chamfer'),
+            ('HALF', 'Half',  'Shoulders at 0.5× thickness, nose flattened to shoulder midpoint'),
+            ('FULL', 'Full',  'Shoulders at 1.0× thickness, nose flattened to shoulder midpoint'),
+        ],
+        default='NONE',
+    )
+    trim_min_corner_angle: bpy.props.FloatProperty(
+        name='Min Corner Angle',
+        description=(
+            'Acute convex dihedral angles below this threshold collapse the nose '
+            'to a flat prism instead of generating a proud corner (degrees)'
+        ),
+        default=30.0, min=1.0, max=90.0,
+        step=100, precision=1,
     )
