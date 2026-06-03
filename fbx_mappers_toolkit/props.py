@@ -520,3 +520,70 @@ class FBXMT_Props(PropertyGroup):
         default=30.0, min=1.0, max=90.0,
         step=100, precision=1,
     )
+
+    # ── Ceiling Deco System ───────────────────────────────────────────────────
+    # Coving + Beam Generation.  depth/thickness are shared between both
+    # operators so coving and beam ends use identical cross-sections.
+
+    coving_depth: bpy.props.FloatProperty(
+        name='Depth',
+        description='How far the coving/beam profile extends DOWN the wall surface from the seam',
+        default=0.25, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    coving_thickness: bpy.props.FloatProperty(
+        name='Thickness',
+        description='How far the coving/beam profile extends AWAY from the wall along the ceiling',
+        default=0.15, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    coving_notch_h: bpy.props.FloatProperty(
+        name='Notch H',
+        description=(
+            'Horizontal notch — pulls v2 back from the far corner along h_arm '
+            'as a fraction of depth. '
+            '0.5+0.5 = rectangle, 0+0 = right-angle triangle, 1+1 = kite'
+        ),
+        default=0.5, min=0.0, max=1.0,
+        step=1, precision=3,
+    )
+    coving_notch_v: bpy.props.FloatProperty(
+        name='Notch V',
+        description=(
+            'Vertical notch — pulls v2 back from the far corner along wall_down '
+            'as a fraction of thickness. '
+            '0.5+0.5 = rectangle, 0+0 = right-angle triangle, 1+1 = kite'
+        ),
+        default=0.5, min=0.0, max=1.0,
+        step=1, precision=3,
+    )
+
+    # Beam placement
+    beam_count: bpy.props.IntProperty(
+        name='Count',
+        description='Number of beam pairs to place across the selected span',
+        default=1, min=1, max=64,
+    )
+    beam_spacing: bpy.props.FloatProperty(
+        name='Spacing',
+        description='Place beams at this interval instead of count (0 = use count)',
+        default=0.0, min=0.0, max=100.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+    beam_offset_h: bpy.props.FloatProperty(
+        name='Horiz Offset',
+        description='Horizontal offset of beam empties from the centroid line',
+        default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    beam_offset_v: bpy.props.FloatProperty(
+        name='Vert Offset',
+        description='Vertical offset of beam empties from the centroid',
+        default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    beam_snap_to_face: bpy.props.BoolProperty(
+        name='Snap to Face Centre',
+        description='Snap each beam empty to the nearest selected face centre after placement',
+        default=False,
+    )

@@ -1,17 +1,74 @@
-# FBX Mapper's Toolkit — v0.2.40
+# FBX Mapper's Toolkit — v0.2.41
 
-UV unwrap, material management, import/export, and dihedral trim generation for UE5/UT99 mapping workflows in Blender 5.1+.
+UV unwrap, material management, import/export, dihedral trim generation, ceiling deco (coving), and beam placement for UE5/UT99 mapping workflows in Blender 5.1+.
 
 ---
 
-## What's new in v0.2.40
+## What's new in v0.2.41
+
+### Ceiling Deco System — coving and beam placement
+
+Two new operators in the **N-panel → FBX Toolkit → Ceiling Deco** section.
+
+#### Generate Coving
+
+Sweeps a 4-vert coving profile (ceiling leg → notch → wall leg → back) along any selected ceiling/wall seam edge run. Supports:
+
+- **Closed loops** — single or multi-mesh selections that form a continuous closed loop
+- **Open chains** — partial seam runs with clean start/end caps
+- **Bay curves** — concave and convex curved walls with correct dihedral miters at every facet
+- **Bay/straight wall junctions** — automatic miter termination where bay curve meets straight wall
+- **Multi-mesh selections** — edges from two or more mesh objects are combined into one world edge graph; coincident verts from different meshes (within 1 cm) are merged automatically
+- **Cross-mesh T-junctions** — where an InnerWall seam endpoint lies on an OuterWall edge mid-span, the sanitiser splits the host edge and re-chains the combined graph per source mesh
+- **Auto-export OBJ** — incremental counter, exports coving mesh + seam wire reference
+
+| Parameter | Description | Default |
+|---|---|---|
+| Depth | How far the profile extends DOWN the wall from the seam | 0.25 m |
+| Thickness | How far the profile extends ALONG the ceiling from the seam | 0.15 m |
+| Notch H | Horizontal notch fraction — 0.5 = rectangle, 0 = triangle, 1 = kite | 0.5 |
+| Notch V | Vertical notch fraction — 0.5 = rectangle, 0 = triangle, 1 = kite | 0.5 |
+
+**Profile shape** (4 verts per seam vert, wound consistently):
+
+```
+ceiling ──── v1 (seam + h_arm × thickness)
+              │
+             v2 (notch vert — notch_h/notch_v controlled)
+              │
+wall    ──── v3 (seam + wall_down × depth)
+              │
+back    ──── sv (seam vert on wall surface)
+```
+
+**Bay/straight junction handling:** At the transition from a curved bay wall to a straight return wall, the system detects the junction (c_h < 0.5, edge length ratio > 3) and snaps the adjacent ring's v1 to the junction miter point. This closes the gap between the last bay ceiling arm and the straight wall ceiling arm.
+
+**Known limitations:**
+- Cross-mesh T-junctions where InnerWall and OuterWall share a seam but the shared edges are not pre-split by the user — the sanitiser handles this automatically but results may vary on complex geometry. Workaround: manually add a vert at the T-intersection before selecting.
+
+---
+
+#### Generate Beams
+
+Places beam empty pairs across a selected face span for use with the FBXMT beam instancing pipeline.
+
+| Parameter | Description | Default |
+|---|---|---|
+| Count | Number of beam pairs | 1 |
+| Spacing | Place at interval instead of count (0 = use count) | 0 m |
+| Horiz Offset | Horizontal offset from centroid line | 0 m |
+| Vert Offset | Vertical offset from centroid | 0 m |
+| Snap to Face Centre | Snap empties to nearest selected face centre | Off |
+
+---
+
+## What's new in v0.2.40 (previous release)
 
 ### Dihedral Trim Generator (trim_gen2) — release milestone
 
-`Generate Trim (Dihedral)` sweeps a 10-vert profile ring along any selected wall/floor, wall/ceiling, wall/wall, or ramp edge run. This release marks the first stable milestone of the system.
+`Generate Trim (Dihedral)` sweeps a 10-vert profile ring along any selected wall/floor, wall/ceiling, wall/wall, or ramp edge run.
 
-#### Profile
-10 verts wound clockwise from the seam vert (v0):
+#### Profile verts
 
 | Vert | Role |
 |---|---|
@@ -33,22 +90,8 @@ No-chamfer mode collapses to 6 unique positions (v2=v1, v4=v3, v6=v7, v8=v9).
 - **Half** — nose flattened, toe chamfer bevel, mid toe loop present
 - **Full** — nose flattened, toe chamfer bevel, mid toe loop collapsed
 
-#### Working cases
-- Wall/floor — straight, curved, closed loop
-- Wall/ceiling — straight and curved
-- Wall/wall — convex and concave 90° corners
-- Ramp — floor→ramp→floor runs (any length, any combination)
-- Solo ramp edge — correct orientation on any wall axis
-- Multi-chain selection — merged into one object, caps welded
-- Curved wall/floor runs with large floor ngons — correct continuous mitering
-- Auto-export OBJ with incremental counter
-
-#### Known limitations
-- 3-edge junction miter faces — topology correct, miter quality not resolved
-- Ramp switchback (two ramps ascending in opposite directions sharing a vert) — degenerate, select each ramp separately and they weld at the junction
-- Closed platform loop — 3 split-ring gaps at 4-face concave corner and arc transition points (not a typical workflow — individual seam runs are the normal use)
-
 #### Parameters
+
 | Parameter | Description |
 |---|---|
 | Thickness | Profile height from seam to nose |
@@ -58,28 +101,9 @@ No-chamfer mode collapses to 6 unique positions (v2=v1, v4=v3, v6=v7, v8=v9).
 
 ---
 
-## What's new in v0.2.39 (previous release)
-
-### Colour Modifier System — full overhaul
-
-The V2 colour system has been replaced with a unified notch-driven system.
-
-**Anchor Colour A** — H/S/V notch controls
-- Hue: 30° steps (12 positions)
-- Saturation: Low / Medium / High
-- Value: Darkest / Dark / Mid / Light / Lightest
-
-**Anchor Colour B** — always derived from A
-- Hue Offset, Saturation, Value notches
-- B colours no longer stored — always computed fresh, eliminating stale tile bug on load
-
-**Ignore material** — hardcoded grey, cannot follow anchor hue.
-
----
-
 ## Installation
 
-1. Download `fbx_mappers_toolkit_v0.2.40.zip`
+1. Download `fbx_mappers_toolkit_v0.2.41.zip`
 2. In Blender 5.1+: **Edit → Preferences → Extensions → Install from Disk**
 3. Select the zip — do not unzip first
 4. Enable the extension if not auto-enabled
@@ -93,8 +117,9 @@ The V2 colour system has been replaced with a unified notch-driven system.
 3. Import or open your FBX/OBJ geometry
 4. Use **Auto-Assign** to classify faces by normal angle
 5. Use **UV Unwrap** to apply FBXMT projection per material type
-6. Select wall/floor seam edges → **Generate Trim (Dihedral)** to add trim geometry
-7. Export via **Export** tab for UE5, or use the engine adapter pipeline
+6. Select wall/ceiling seam edges → **Generate Coving** to add coving geometry
+7. Select wall/floor seam edges → **Generate Trim (Dihedral)** to add trim geometry
+8. Export via **Export** tab for UE5, or use the engine adapter pipeline
 
 ---
 
@@ -110,17 +135,14 @@ The V2 colour system has been replaced with a unified notch-driven system.
 
 ## Known issues / outstanding work
 
-- 3-edge junction miter faces — topology correct, miter quality unresolved
-- Closed loop trim — gaps at 4-face concave corner and arc transition verts
+- Cross-mesh T-junction coving — sanitiser handles common cases; complex geometry may need manual vert insertion at T-intersection
+- 3-edge junction miter faces (trim_gen2) — topology correct, miter quality unresolved
 - Ramp switchback — degenerate case, select each ramp separately
-- Prop rename: `uv_floor_threshold` → `ramp_wall_threshold` (pending)
 - `PROFILE_180_FLAT` 10-vert not yet implemented
 - Vertex-level generation, sequential generation, face/vertex select modes
 - UV unwrap lockout toggle on trim objects
 - Engine adapters: interchange format spec, fbxmt-ue5/unity/godot/flax
 - Export: UE5 procedural material pipeline, UT99 Play Volume Generator
-- Ceiling deco / coving operator — planned
-- Beam placement system — planned
 - UT99 texture material library generator — planned
 
 ---

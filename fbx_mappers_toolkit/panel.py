@@ -574,3 +574,97 @@ class FBXMT_PT_TrimGen2(Panel):
         sub = row2.row()
         sub.enabled = props.trim2_auto_export
         sub.prop(props, 'trim2_export_dir', text='')
+
+
+# ---------------------------------------------------------------------------
+# Ceiling Deco panel
+
+class FBXMT_PT_CeilingDeco(Panel):
+    bl_space_type  = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_label       = "Ceiling Deco"
+    bl_category    = "FBX Toolkit"
+    bl_parent_id   = "FBXMT_PT_Main"
+    bl_order       = 8
+    bl_options     = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout  = self.layout
+        props   = context.scene.fbxmt_props
+        in_edit = context.mode == 'EDIT_MESH'
+        in_obj  = context.mode == 'OBJECT'
+
+        # ── Shared profile ────────────────────────────────────────────────────
+        box = layout.box()
+        box.label(text='Profile (Coving & Beams)', icon='EDGESEL')
+        col = box.column(align=True)
+        col.prop(props, 'coving_depth',      text='Depth (wall)')
+        col.prop(props, 'coving_thickness',  text='Thickness (ceiling)')
+        col.prop(props, 'coving_notch_h', text='Notch H')
+        col.prop(props, 'coving_notch_v', text='Notch V')
+
+        layout.separator()
+
+        # ── Generate Coving ───────────────────────────────────────────────────
+        box_cov = layout.box()
+        box_cov.label(text='Coving', icon='MOD_SOLIDIFY')
+
+        if not in_edit:
+            col_info = box_cov.column()
+            col_info.label(text='Enter Edit Mode and', icon='INFO')
+            col_info.label(text='select ceiling/wall seam edges.')
+
+        row_cov = box_cov.row()
+        row_cov.scale_y = 1.4
+        row_cov.enabled = in_edit
+        row_cov.operator('fbxmt.generate_coving',
+                         text='Generate Coving',
+                         icon='MOD_SOLIDIFY')
+
+        layout.separator()
+
+        # ── Beam Placement ────────────────────────────────────────────────────
+        box_bp = layout.box()
+        box_bp.label(text='Beam Placement', icon='EMPTY_AXIS')
+
+        col_bp = box_bp.column(align=True)
+        col_bp.prop(props, 'beam_count',    text='Count')
+        col_bp.prop(props, 'beam_spacing',  text='Spacing')
+        col_bp.prop(props, 'beam_offset_h', text='Horiz Offset')
+        col_bp.prop(props, 'beam_offset_v', text='Vert Offset')
+        box_bp.prop(props, 'beam_snap_to_face', text='Snap to Face Centre')
+
+        if not in_edit:
+            col_info2 = box_bp.column()
+            col_info2.label(text='Enter Edit Mode, select', icon='INFO')
+            col_info2.label(text='two face groups, then place.')
+
+        row_bp = box_bp.row()
+        row_bp.scale_y = 1.2
+        row_bp.enabled = in_edit
+        row_bp.operator('fbxmt.place_beams',
+                        text='Place Beams',
+                        icon='EMPTY_AXIS')
+
+        row_clr = box_bp.row()
+        row_clr.enabled = in_obj
+        row_clr.operator('fbxmt.clear_beams',
+                         text='Clear Beam Empties',
+                         icon='X')
+
+        layout.separator()
+
+        # ── Generate Beams ────────────────────────────────────────────────────
+        box_gen = layout.box()
+        box_gen.label(text='Beam Generation', icon='MESH_CUBE')
+
+        if not in_obj:
+            box_gen.label(text='Switch to Object Mode', icon='INFO')
+            box_gen.label(text='to generate beams.')
+
+        row_gen = box_gen.row()
+        row_gen.scale_y = 1.4
+        row_gen.enabled = in_obj
+        row_gen.operator('fbxmt.generate_beams',
+                         text='Generate Beams',
+                         icon='MESH_CUBE')

@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "0.2.40.148"
+__version__ = "0.2.41"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -40,6 +40,8 @@ from .materials import (
 from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview, OT_FBXMT_SmartPack
 from .trim_gen import OT_FBXMT_Generate_Trim
 from .trim_gen2 import OT_FBXMT_Generate_Trim2
+from .ceiling_deco import OT_FBXMT_Generate_Coving, OT_FBXMT_Generate_Beams
+from .beam_placement import OT_FBXMT_Place_Beams, OT_FBXMT_Clear_Beams
 from .props import FBXMT_GlobalPrefs, FBXMT_Props
 from .primitives import register_primitives, unregister_primitives
 from .project_setup import (
@@ -74,6 +76,7 @@ from .panel import (
     FBXMT_PT_Export,
     FBXMT_PT_TrimGen,
     FBXMT_PT_TrimGen2,
+    FBXMT_PT_CeilingDeco,
 )
 
 # Operators, Panels, PropertyGroups, and Menus must be registered manually.
@@ -114,6 +117,10 @@ classes = (
     OT_FBXMT_SmartPack,
     OT_FBXMT_Generate_Trim,
     OT_FBXMT_Generate_Trim2,
+    OT_FBXMT_Generate_Coving,
+    OT_FBXMT_Generate_Beams,
+    OT_FBXMT_Place_Beams,
+    OT_FBXMT_Clear_Beams,
     OT_FBXMT_Save_Template,
     OT_FBXMT_Export,
     FBXMT_PT_Main,
@@ -123,6 +130,7 @@ classes = (
     FBXMT_PT_UVUnwrap,
     FBXMT_PT_TrimGen,
     FBXMT_PT_TrimGen2,
+    FBXMT_PT_CeilingDeco,
     FBXMT_PT_Export,
 )
 
@@ -134,6 +142,13 @@ def _draw_trim_context_menu(self, context):
 
 
 def register():
+    # Purge any stale .pyc files so Blender recompiles from source
+    import os, shutil
+    pkg_dir = os.path.dirname(__file__)
+    cache = os.path.join(pkg_dir, '__pycache__')
+    if os.path.isdir(cache):
+        shutil.rmtree(cache, ignore_errors=True)
+
     set_addon_id(__package__)
     FBXMT_AddonPreferences.bl_idname = __package__
 
