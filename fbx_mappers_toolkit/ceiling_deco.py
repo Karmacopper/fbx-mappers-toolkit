@@ -1,6 +1,6 @@
-# ceiling_deco.py — FBX Mapper's Toolkit  [v0.25.0]
+# ceiling_deco.py — FBX Mapper's Toolkit  [v0.25.1]
 import sys as _sys
-print("FBXMT ceiling_deco v0.25.0 loaded", file=_sys.stderr)
+print("FBXMT ceiling_deco v0.25.1 loaded", file=_sys.stderr)
 del _sys
 
 
@@ -1291,23 +1291,10 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
         axis       = end_co - start_co
         length     = axis.length
         group_name = start_empty.name.rsplit('_', 1)[0]
-        import sys as _sys
-        print(f'FBXMT Generate: {group_name} '
-              f'empty_1=({Vector(start_empty.matrix_world.translation).x:.3f},'
-              f'{Vector(start_empty.matrix_world.translation).y:.3f},'
-              f'{Vector(start_empty.matrix_world.translation).z:.3f}) '
-              f'empty_2=({Vector(end_empty.matrix_world.translation).x:.3f},'
-              f'{Vector(end_empty.matrix_world.translation).y:.3f},'
-              f'{Vector(end_empty.matrix_world.translation).z:.3f}) '
-              f'length={length:.4f}m pullback={pullback:.4f}m',
-              file=_sys.stderr)
         if length > 1e-4:
             t_dir    = axis / length
             start_co = start_co - t_dir * pullback
             end_co   = end_co   + t_dir * pullback
-            print(f'  extended: start=({start_co.x:.3f},{start_co.y:.3f},{start_co.z:.3f})'
-                  f'  end=({end_co.x:.3f},{end_co.y:.3f},{end_co.z:.3f})',
-                  file=_sys.stderr)
 
         # ── Build beam mesh ───────────────────────────────────────────────
         beam_bm = bmesh.new()
@@ -1482,13 +1469,6 @@ class OT_FBXMT_Generate_Parallel(Operator):
                       file=_sys.stderr)
                 skipped += 1
                 continue
-
-            print(f'FBXMT Parallel: {anchor.name} '
-                  f'origin=({ray_origin.x:.3f},{ray_origin.y:.3f},{ray_origin.z:.3f}) '
-                  f'normal=({ray_dir.x:.3f},{ray_dir.y:.3f},{ray_dir.z:.3f}) '
-                  f'hit=({hit_loc.x:.3f},{hit_loc.y:.3f},{hit_loc.z:.3f}) '
-                  f'length={(hit_loc-ray_origin).length:.3f}m',
-                  file=_sys.stderr)
 
             # Extend both ends outward for boolean
             axis   = hit_loc - ray_origin

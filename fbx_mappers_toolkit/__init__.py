@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "0.25.0"
+__version__ = "0.25.1"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -48,6 +48,8 @@ from .ceiling_deco import (
     OT_FBXMT_Generate_Beams,
 )
 from .beam_placement import (
+    OT_FBXMT_Quick_Beam,
+    OT_FBXMT_Quick_Beam,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
     OT_FBXMT_Clear_Parallel,
@@ -137,6 +139,7 @@ classes = (
     OT_FBXMT_Generate_Spokes,
     OT_FBXMT_Generate_Curve,
     OT_FBXMT_Generate_Beams,
+    OT_FBXMT_Quick_Beam,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
     OT_FBXMT_Clear_Parallel,

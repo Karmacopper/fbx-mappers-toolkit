@@ -569,6 +569,20 @@ class FBXMT_PT_CeilingDeco(Panel):
 
         layout.separator()
 
+        # ── Quick Beam ────────────────────────────────────────────────────────
+        box_qb = layout.box()
+        box_qb.label(text='Quick Beam', icon='LIGHT_SUN')
+        col_qb = box_qb.column()
+        col_qb.label(text='Select 2 verts/edges/faces,', icon='INFO')
+        col_qb.label(text='then generate a beam between them.', icon='BLANK1')
+        row_qb = box_qb.row()
+        row_qb.scale_y = 1.4
+        row_qb.enabled = in_edit
+        row_qb.operator('fbxmt.quick_beam',
+                        text='Quick Beam', icon='LIGHT_SUN')
+
+        layout.separator()
+
         # ── Parallel Beams ────────────────────────────────────────────────────
         box_par = layout.box()
         box_par.label(text='Parallel Beams', icon='SNAP_EDGE')

@@ -1,4 +1,4 @@
-# beam_placement.py — FBX Mapper's Toolkit  [v0.25.0]
+# beam_placement.py — FBX Mapper's Toolkit  [v0.25.1]
 #
 # Three independent beam placement operators:
 #
@@ -974,6 +974,123 @@ class OT_FBXMT_Clear_Curve(Operator):
 
 
 # ---------------------------------------------------------------------------
+# Operator: Quick Beam
+
+class OT_FBXMT_Quick_Beam(bpy.types.Operator):
+    bl_idname      = 'fbxmt.quick_beam'
+    bl_label       = 'Quick Beam'
+    bl_description = ('Select exactly 2 verts, edges, or faces (any mix). '
+                      'Places a beam between their centres immediately — '
+                      'no empties. Boolean trim modifier added against the '
+                      'active object. Selection cleared after generation.')
+    bl_options     = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return (context.mode == 'EDIT_MESH'
+                and obj is not None and obj.type == 'MESH')
+
+    def execute(self, context):
+        obj        = context.active_object
+        source_obj = obj
+        mat        = obj.matrix_world
+
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bm.edges.ensure_lookup_table()
+        bm.faces.ensure_lookup_table()
+
+        # Determine the selection mode from actual selected element counts,
+        # ignoring the cascading selection that Blender applies (selected face
+        # marks all its edges/verts as selected too).
+        sel_faces = [f for f in bm.faces if f.select]
+        # Edges truly selected by the user = selected but not a boundary of a selected face
+        face_edge_indices = {e.index for f in sel_faces for e in f.edges}
+        sel_edges = [e for e in bm.edges
+                     if e.select and e.index not in face_edge_indices]
+        # Verts truly selected = selected but not part of any selected face or edge
+        face_vert_indices = {v.index for f in sel_faces for v in f.verts}
+        edge_vert_indices = {v.index for e in sel_edges for v in e.verts}
+        sel_verts = [v for v in bm.verts
+                     if v.select
+                     and v.index not in face_vert_indices
+                     and v.index not in edge_vert_indices]
+
+        elements = []
+        for f in sel_faces:
+            elements.append(mat @ f.calc_center_median())
+        for e in sel_edges:
+            elements.append(mat @ ((e.verts[0].co + e.verts[1].co) / 2))
+        for v in sel_verts:
+            elements.append(mat @ v.co)
+
+        bm.free()
+
+        if len(elements) < 2:
+            bpy.ops.object.mode_set(mode='EDIT')
+            self.report({'WARNING'},
+                'Select exactly 2 elements (verts, edges, or faces).')
+            return {'CANCELLED'}
+
+        start_co = Vector(elements[0])
+        end_co   = Vector(elements[1])
+
+        # Overrun — extend both ends outward for boolean
+        pullback = 0.25
+        axis     = end_co - start_co
+        length   = axis.length
+        if length < 1e-4:
+            bpy.ops.object.mode_set(mode='EDIT')
+            self.report({'WARNING'}, 'Selected elements are coincident.')
+            return {'CANCELLED'}
+        t_dir    = axis / length
+        start_co = start_co - t_dir * pullback
+        end_co   = end_co   + t_dir * pullback
+
+        # Build beam mesh
+        props     = context.scene.fbxmt_props
+        from .ceiling_deco import (ensure_fbxmt_materials, _build_beam,
+                                   move_to_collection, COLLECTION_TRIM)
+        ensure_fbxmt_materials()
+        trim_mat = bpy.data.materials.get('M_FBXMT_Trim')
+        if trim_mat is None:
+            self.report({'ERROR'}, 'M_FBXMT_Trim not found — run Setup Scene first')
+            return {'CANCELLED'}
+
+        beam_bm = bmesh.new()
+        _build_beam(beam_bm, start_co, end_co,
+                    props.coving_depth, props.coving_thickness,
+                    0.5, 0.5, mat_index=0)
+        beam_mesh = bpy.data.meshes.new('QuickBeam')
+        beam_mesh.materials.append(trim_mat)
+        beam_bm.to_mesh(beam_mesh)
+        beam_bm.free()
+        beam_mesh.update()
+
+        beam_obj = bpy.data.objects.new('QuickBeam', beam_mesh)
+        context.collection.objects.link(beam_obj)
+        move_to_collection(beam_obj, COLLECTION_TRIM)
+
+        # Boolean trim — source is the mesh being edited
+        if source_obj and source_obj.type == 'MESH':
+            mod = beam_obj.modifiers.new(name='FBXMT_BoolTrim', type='BOOLEAN')
+            mod.operation = 'DIFFERENCE'
+            mod.object    = source_obj
+            mod.solver    = 'FLOAT'
+            # Modifier left in stack for fine-tuning
+
+        # Clear selection to prevent accidental multi-click
+        bpy.ops.object.select_all(action='DESELECT')
+
+        self.report({'INFO'}, 'Quick beam generated')
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
 # Legacy clear
 
 class OT_FBXMT_Clear_Beams(Operator):
@@ -1041,6 +1158,7 @@ class OT_FBXMT_Preview_Parallel_Rays(bpy.types.Operator):
 # Registration
 
 classes = (
+    OT_FBXMT_Quick_Beam,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
     OT_FBXMT_Clear_Parallel,

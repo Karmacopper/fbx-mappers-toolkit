@@ -1,4 +1,4 @@
-# par_ray_preview.py — FBX Mapper's Toolkit  [v0.25.0]
+# par_ray_preview.py — FBX Mapper's Toolkit  [v0.25.1]
 #
 # Viewport overlay that draws parallel beam ray previews.
 #
@@ -131,12 +131,7 @@ def _update_cache(depsgraph=None):
             }
             continue
 
-        import sys as _sys
         ray_dir = Vector(normal).normalized()
-        print(f'FBXMT cache: {anchor.name} source={source_obj.name} '
-              f'pos=({pos.x:.2f},{pos.y:.2f},{pos.z:.2f}) '
-              f'dir=({ray_dir.x:.2f},{ray_dir.y:.2f},{ray_dir.z:.2f})',
-              file=_sys.stderr)
 
         # Use evaluated object so ray_cast works against final mesh geometry
         try:
@@ -230,8 +225,6 @@ def register_par_preview():
     _draw_handle = bpy.types.SpaceView3D.draw_handler_add(
         _draw_par_rays, (), 'WINDOW', 'POST_VIEW'
     )
-    import sys
-    print('FBXMT: par_ray_preview draw handler registered', file=sys.stderr)
 
 
 def unregister_par_preview():
