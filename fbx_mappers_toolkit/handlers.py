@@ -71,7 +71,15 @@ def on_depsgraph_update_post(scene, depsgraph):
 
         bm = bmesh.from_edit_mesh(obj.data)
         selected = [e for e in bm.edges if e.select]
-        if not selected:
+
+        # Respect the per-scene overlay toggle
+        overlay_on = getattr(
+            getattr(ctx.scene, 'fbxmt_props', None),
+            'show_trim_overlay', True
+        )
+        if not overlay_on:
+            clear_overlay()
+        elif not selected:
             clear_overlay()
         else:
             build_overlay(obj, selected)
@@ -85,14 +93,18 @@ def on_depsgraph_update_post(scene, depsgraph):
 
 def register_handlers():
     from .trim_overlay import register_overlay
+    from .par_ray_preview import register_par_preview
     register_overlay()
+    register_par_preview()
     bpy.app.handlers.load_post.append(on_load_post)
     bpy.app.handlers.depsgraph_update_post.append(on_depsgraph_update_post)
 
 
 def unregister_handlers():
     from .trim_overlay import unregister_overlay
+    from .par_ray_preview import unregister_par_preview
     unregister_overlay()
+    unregister_par_preview()
     if on_load_post in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(on_load_post)
     if on_depsgraph_update_post in bpy.app.handlers.depsgraph_update_post:

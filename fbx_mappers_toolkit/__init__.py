@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "0.2.41"
+__version__ = "0.25.0"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -40,8 +40,23 @@ from .materials import (
 from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, OT_FBXMT_UV_Preview, OT_FBXMT_SmartPack
 from .trim_gen import OT_FBXMT_Generate_Trim
 from .trim_gen2 import OT_FBXMT_Generate_Trim2
-from .ceiling_deco import OT_FBXMT_Generate_Coving, OT_FBXMT_Generate_Beams
-from .beam_placement import OT_FBXMT_Place_Beams, OT_FBXMT_Clear_Beams
+from .ceiling_deco import (
+    OT_FBXMT_Generate_Coving,
+    OT_FBXMT_Generate_Parallel,
+    OT_FBXMT_Generate_Spokes,
+    OT_FBXMT_Generate_Curve,
+    OT_FBXMT_Generate_Beams,
+)
+from .beam_placement import (
+    OT_FBXMT_Place_Parallel,
+    OT_FBXMT_Preview_Parallel_Rays,
+    OT_FBXMT_Clear_Parallel,
+    OT_FBXMT_Place_Spokes,
+    OT_FBXMT_Clear_Spokes,
+    OT_FBXMT_Place_Curve,
+    OT_FBXMT_Clear_Curve,
+    OT_FBXMT_Clear_Beams,
+)
 from .props import FBXMT_GlobalPrefs, FBXMT_Props
 from .primitives import register_primitives, unregister_primitives
 from .project_setup import (
@@ -74,7 +89,7 @@ from .panel import (
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
     FBXMT_PT_Export,
-    FBXMT_PT_TrimGen,
+    FBXMT_PT_TrimMain,
     FBXMT_PT_TrimGen2,
     FBXMT_PT_CeilingDeco,
 )
@@ -118,8 +133,17 @@ classes = (
     OT_FBXMT_Generate_Trim,
     OT_FBXMT_Generate_Trim2,
     OT_FBXMT_Generate_Coving,
+    OT_FBXMT_Generate_Parallel,
+    OT_FBXMT_Generate_Spokes,
+    OT_FBXMT_Generate_Curve,
     OT_FBXMT_Generate_Beams,
-    OT_FBXMT_Place_Beams,
+    OT_FBXMT_Place_Parallel,
+    OT_FBXMT_Preview_Parallel_Rays,
+    OT_FBXMT_Clear_Parallel,
+    OT_FBXMT_Place_Spokes,
+    OT_FBXMT_Clear_Spokes,
+    OT_FBXMT_Place_Curve,
+    OT_FBXMT_Clear_Curve,
     OT_FBXMT_Clear_Beams,
     OT_FBXMT_Save_Template,
     OT_FBXMT_Export,
@@ -128,17 +152,36 @@ classes = (
     FBXMT_PT_Materials,
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
-    FBXMT_PT_TrimGen,
-    FBXMT_PT_TrimGen2,
-    FBXMT_PT_CeilingDeco,
     FBXMT_PT_Export,
 )
 
+# Trim Tools panels — registered conditionally on enable_trim_tools pref
+_trim_classes = (
+    FBXMT_PT_TrimMain,
+    FBXMT_PT_TrimGen2,
+    FBXMT_PT_CeilingDeco,
+)
 
-def _draw_trim_context_menu(self, context):
-    if context.tool_settings.mesh_select_mode[1]:  # edge select mode
-        self.layout.separator()
-        self.layout.operator('fbxmt.generate_trim', icon='MOD_EDGESPLIT')
+
+
+def register_trim_tools():
+    for c in _trim_classes:
+        try:
+            bpy.utils.register_class(c)
+        except Exception:
+            try:
+                bpy.utils.unregister_class(c)
+                bpy.utils.register_class(c)
+            except Exception:
+                pass
+
+
+def unregister_trim_tools():
+    for c in reversed(_trim_classes):
+        try:
+            bpy.utils.unregister_class(c)
+        except Exception:
+            pass
 
 
 def register():
@@ -177,8 +220,6 @@ def register():
     register_project_setup()
     register_grid()
     register_handlers()
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.append(_draw_trim_context_menu)
-    bpy.types.VIEW3D_MT_edit_mesh.append(_draw_trim_context_menu)
     # Primitives — optional, gated on addon preference
     try:
         addon = bpy.context.preferences.addons.get(__package__)
@@ -186,11 +227,17 @@ def register():
             register_primitives()
     except Exception:
         register_primitives()  # safe fallback if prefs unreadable at load time
+    # Trim Tools — optional, gated on addon preference
+    try:
+        addon = bpy.context.preferences.addons.get(__package__)
+        if addon is None or addon.preferences.enable_trim_tools:
+            register_trim_tools()
+    except Exception:
+        register_trim_tools()  # safe fallback if prefs unreadable at load time
 
 
 def unregister():
-    bpy.types.VIEW3D_MT_edit_mesh_context_menu.remove(_draw_trim_context_menu)
-    bpy.types.VIEW3D_MT_edit_mesh.remove(_draw_trim_context_menu)
+    unregister_trim_tools()
     unregister_primitives()
     unregister_handlers()
     unregister_grid()

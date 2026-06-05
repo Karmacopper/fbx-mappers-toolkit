@@ -1,6 +1,6 @@
-# ceiling_deco.py — FBX Mapper's Toolkit  [v0.2.41]
+# ceiling_deco.py — FBX Mapper's Toolkit  [v0.25.0]
 import sys as _sys
-print("FBXMT ceiling_deco v0.2.41 loaded", file=_sys.stderr)
+print("FBXMT ceiling_deco v0.25.0 loaded", file=_sys.stderr)
 del _sys
 
 
@@ -776,8 +776,12 @@ def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
     # Wall-down — straight down for a horizontal beam
     wall_down = -world_up
 
+    # Centre offset — shifts the profile so its bounding box midpoint sits on
+    # the empty location rather than v0 being at the empty location.
+    centre_offset = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
+
     def _ring(co):
-        A = Vector(co)
+        A = Vector(co) - centre_offset
         v0 = A.copy()
         v1 = Vector((A.x + h_arm.x * thickness, A.y + h_arm.y * thickness, A.z))
         v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
@@ -810,15 +814,100 @@ def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
     beam_bm.normal_update()
 
 
+
+def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
+    """Sweep the beam profile along an ordered list of ring positions with
+    mitered joins at every interior ring.
+
+    At each ring the local tangent is the bisector of the incoming and
+    outgoing segment directions — this rotates h_arm correctly so adjacent
+    segments meet at a clean mitered angle rather than a perpendicular cut.
+    End rings use the single adjacent segment tangent (flat cap).
+
+    ring_positions: list of Vector, at least 2 entries.
+    """
+    if len(ring_positions) < 2:
+        return
+
+    world_up = Vector((0, 0, 1))
+    notch_h  = 0.5
+    notch_v  = 0.5
+
+    def _tangent(i):
+        """Local tangent at ring i — bisector for interior, segment for ends."""
+        n = len(ring_positions)
+        if i == 0:
+            t = (ring_positions[1] - ring_positions[0])
+        elif i == n - 1:
+            t = (ring_positions[-1] - ring_positions[-2])
+        else:
+            t_in  = (ring_positions[i]     - ring_positions[i - 1]).normalized()
+            t_out = (ring_positions[i + 1] - ring_positions[i]).normalized()
+            t     = t_in + t_out
+        if t.length < 1e-6:
+            t = Vector((0, 1, 0))
+        return t.normalized()
+
+    def _profile(co, tangent):
+        """Build 4-vert profile at co oriented to tangent."""
+        h_arm = tangent.cross(world_up)
+        if h_arm.length < 1e-6:
+            h_arm = tangent.cross(Vector((0, 1, 0)))
+        h_arm      = h_arm.normalized()
+        wall_down  = -world_up
+        centre_off = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
+        A  = Vector(co) - centre_off
+        v0 = A.copy()
+        v1 = A + h_arm * thickness
+        v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
+        v3 = A + wall_down * depth
+        return v0, v1, v2, v3
+
+    def _face(vlist):
+        try:
+            f = bm.faces.new(vlist)
+            f.material_index = mat_index
+        except Exception:
+            pass
+
+    # Build all profile rings
+    rings = []
+    for i, pos in enumerate(ring_positions):
+        t    = _tangent(i)
+        verts = [bm.verts.new(p) for p in _profile(pos, t)]
+        rings.append(verts)
+
+    # Stitch strip faces between adjacent rings
+    STRIPS = [(0, 1), (1, 2), (2, 3), (3, 0)]
+    for ri in range(len(rings) - 1):
+        rs = rings[ri]
+        re = rings[ri + 1]
+        for a, b in STRIPS:
+            _face([rs[a], rs[b], re[b], re[a]])
+
+    # Start cap (flat, perpendicular to first segment)
+    v0s, v1s, v2s, v3s = rings[0]
+    _face([v2s, v1s, v0s])
+    _face([v3s, v2s, v0s])
+
+    # End cap
+    v0e, v1e, v2e, v3e = rings[-1]
+    _face([v0e, v1e, v2e])
+    _face([v0e, v2e, v3e])
+
+    bm.normal_update()
+
 # ---------------------------------------------------------------------------
 # Beam empty discovery (used by both Generate Beams and beam_placement.py)
 
-def _get_beam_empties(context):
-    """Return list of (start_empty, end_empty) pairs from beam_NNN_1/2 empties."""
+def _get_empties_by_prefix(prefix):
+    """Return ordered (start, end) pairs for empties named prefix_NNN_1/2."""
     from collections import defaultdict
     groups = defaultdict(dict)
     for obj in bpy.data.objects:
         if obj.type != 'EMPTY':
+            continue
+        if not obj.name.startswith(prefix + '_'):
             continue
         parts = obj.name.rsplit('_', 1)
         if len(parts) == 2 and parts[1] in ('1', '2'):
@@ -829,6 +918,11 @@ def _get_beam_empties(context):
         if 1 in g and 2 in g:
             pairs.append((g[1], g[2]))
     return pairs
+
+
+def _get_beam_empties(context):
+    """Legacy helper — returns beam_NNN pairs. Used by old beam_placement refs."""
+    return _get_empties_by_prefix('beam')
 
 
 # ---------------------------------------------------------------------------
@@ -1067,84 +1161,25 @@ class OT_FBXMT_Generate_Coving(Operator):
             # remove_doubles intentionally omitted — triangle detection handles snapped verts
             cov_bm.to_mesh(cov_mesh)
             cov_bm.free()
+            # Recalculate normals to point outward — generator produces
+            # inward-facing normals which break ray-cast based tools
+            bpy.ops.object.select_all(action='DESELECT')
+            temp_obj = bpy.data.objects.new('_fbxmt_temp_norm', cov_mesh)
+            context.collection.objects.link(temp_obj)
+            context.view_layer.objects.active = temp_obj
+            temp_obj.select_set(True)
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.mesh.normals_make_consistent(inside=False)
+            bpy.ops.object.mode_set(mode='OBJECT')
+            context.collection.objects.unlink(temp_obj)
+            bpy.data.objects.remove(temp_obj, do_unlink=False)
             cov_mesh.update()
 
             cov_obj = bpy.data.objects.new(f'{src_name}{suffix}', cov_mesh)
             context.collection.objects.link(cov_obj)
             move_to_collection(cov_obj, COLLECTION_TRIM)
             world_bm.free()
-
-            # Auto-export
-            try:
-                import os
-                scene_props = context.scene.fbxmt_props
-                if scene_props.trim2_auto_export and cov_obj:
-                    from . import __version__
-                    export_dir = scene_props.trim2_export_dir.strip()
-                    if not export_dir:
-                        blend_path = bpy.data.filepath
-                        export_dir = (os.path.dirname(blend_path)
-                                      if blend_path else os.path.expanduser('~'))
-                    export_dir = bpy.path.abspath(export_dir)
-                    os.makedirs(export_dir, exist_ok=True)
-                    base = os.path.join(export_dir, f'{src_name}_coving_{__version__}')
-                    counter = 1
-                    while True:
-                        path = f'{base}_{counter:03d}.obj'
-                        if not os.path.exists(path):
-                            break
-                        counter += 1
-
-                    edge_obj  = None
-                    edge_mesh = None
-                    try:
-                        edge_bm  = bmesh.new()
-                        vert_map = {}
-                        for co_a, co_b in seam_edge_coords:
-                            va = vert_map.get(co_a)
-                            if va is None:
-                                va = edge_bm.verts.new(Vector(co_a))
-                                vert_map[co_a] = va
-                            vb = vert_map.get(co_b)
-                            if vb is None:
-                                vb = edge_bm.verts.new(Vector(co_b))
-                                vert_map[co_b] = vb
-                            try:
-                                edge_bm.edges.new((va, vb))
-                            except Exception:
-                                pass
-                        edge_mesh = bpy.data.meshes.new(f'{src_name}_seam_edges')
-                        edge_bm.to_mesh(edge_mesh)
-                        edge_bm.free()
-                        edge_mesh.update()
-                        edge_obj = bpy.data.objects.new(
-                            f'{src_name}_seam_edges', edge_mesh)
-                        context.collection.objects.link(edge_obj)
-                    except Exception as edge_err:
-                        self.report({'WARNING'},
-                                    f'Coving export: seam edge mesh failed: {edge_err}')
-
-                    bpy.ops.object.select_all(action='DESELECT')
-                    cov_obj.select_set(True)
-                    if edge_obj:
-                        edge_obj.select_set(True)
-                    context.view_layer.objects.active = cov_obj
-                    bpy.ops.wm.obj_export(
-                        filepath=path,
-                        export_selected_objects=True,
-                        export_uv=False,
-                        export_normals=False,
-                        export_materials=False,
-                    )
-                    self.report({'INFO'}, f'Coving exported: {os.path.basename(path)}')
-
-                    if edge_obj:
-                        bpy.data.objects.remove(edge_obj, do_unlink=True)
-                    if edge_mesh:
-                        bpy.data.meshes.remove(edge_mesh)
-
-            except Exception as e:
-                self.report({'WARNING'}, f'Coving auto-export failed: {e}')
 
             msg = f'Coving generated ({len(valid_chains)} chain(s))'
             if skipped:
@@ -1161,12 +1196,225 @@ class OT_FBXMT_Generate_Coving(Operator):
             except Exception:
                 pass
 
-class OT_FBXMT_Generate_Beams(Operator):
-    bl_idname      = 'fbxmt.generate_beams'
-    bl_label       = 'Generate Beams'
-    bl_description = ('Generate beam geometry between paired beam empties '
-                      '(beam_NNN_1 / beam_NNN_2). Profile cross-section matches '
-                      'coving — depth/thickness/notch are shared props.')
+# ---------------------------------------------------------------------------
+# Smart ray-cast for parallel beam _2 placement
+
+_PARALLEL_THRESHOLD = 0.1   # abs(dot) below this = edge-on / pass-through face
+_RAY_MAX_DIST       = 100.0
+_RAY_OFFSET         = 0.001 # nudge past current hit to continue casting
+
+
+def _smart_raycast(obj, ray_origin, ray_dir, depsgraph):
+    """Cast ray along ray_dir, passing through edge-on faces.
+
+    A face is edge-on if abs(dot(ray_dir, face_normal)) < _PARALLEL_THRESHOLD —
+    the ray sees it from its edge rather than its front.  In that case the ray
+    has clipped both leading and trailing edges of a parallel face — jump through
+    and continue hunting for a true terminator face.
+
+    Returns world-space hit location, or None if no valid terminator found.
+    """
+    from mathutils import Vector
+
+    mat_inv  = obj.matrix_world.inverted()
+    rot_inv  = mat_inv.to_3x3()
+
+    # Nudge origin slightly along ray direction so we don't immediately
+    # hit the face the empty is sitting on
+    origin    = Vector(ray_origin) + Vector(ray_dir).normalized() * 0.02
+    direction = Vector(ray_dir).normalized()
+
+    max_iter = 32   # guard against infinite loops in degenerate geometry
+
+    for _ in range(max_iter):
+        # Ray-cast in object local space
+        local_orig = mat_inv @ origin
+        local_dir  = (rot_inv @ direction).normalized()
+
+        hit, loc, normal, face_idx = obj.ray_cast(local_orig, local_dir,
+                                                   distance=_RAY_MAX_DIST)
+        if not hit:
+            return None
+
+        # World-space normal of hit face
+        world_normal = (obj.matrix_world.to_3x3() @ normal).normalized()
+        world_loc    = obj.matrix_world @ loc
+
+        dot = abs(direction.dot(world_normal))
+
+        if dot >= _PARALLEL_THRESHOLD:
+            # Non-parallel face — genuine terminator
+            return world_loc
+
+        # Edge-on face — jump past it and continue
+        origin = world_loc + direction * _RAY_OFFSET
+
+    return None   # ran out of iterations
+
+
+# ---------------------------------------------------------------------------
+# Shared generate helper
+
+def _generate_beams_from_pairs(context, pairs, depth, thickness,
+                                export_stem, merge_verts=False):
+    """Build beam geometry for each (start, end) empty pair.
+
+    For each pair:
+      1. Pull both ends inward by coving_depth along the beam axis so end
+         faces sit inside the source mesh volume.
+      2. Build the beam mesh.
+      3. Add a Boolean Difference modifier using the source mesh stored on
+         the empty as fbxmt_source — trims both ends cleanly.
+      4. Apply the modifier (destructive, at end of operation stack).
+
+    merge_verts: weld coincident verts (curve beams).
+    Returns (generated_objects, export_message).
+    """
+    import os
+    from mathutils import Vector
+    props = context.scene.fbxmt_props
+
+    ensure_fbxmt_materials()
+    trim_mat = bpy.data.materials.get('M_FBXMT_Trim')
+    if trim_mat is None:
+        return [], 'M_FBXMT_Trim not found — run Setup Scene first'
+
+    generated    = []
+    vert_markers = []
+    pullback     = 0.25    # extend each end outward into coving mesh for boolean cut
+
+    for start_empty, end_empty in pairs:
+        start_co = Vector(start_empty.matrix_world.translation)
+        end_co   = Vector(end_empty.matrix_world.translation)
+
+        # ── Extend both ends outward into coving mesh for boolean cut ─────
+        axis       = end_co - start_co
+        length     = axis.length
+        group_name = start_empty.name.rsplit('_', 1)[0]
+        import sys as _sys
+        print(f'FBXMT Generate: {group_name} '
+              f'empty_1=({Vector(start_empty.matrix_world.translation).x:.3f},'
+              f'{Vector(start_empty.matrix_world.translation).y:.3f},'
+              f'{Vector(start_empty.matrix_world.translation).z:.3f}) '
+              f'empty_2=({Vector(end_empty.matrix_world.translation).x:.3f},'
+              f'{Vector(end_empty.matrix_world.translation).y:.3f},'
+              f'{Vector(end_empty.matrix_world.translation).z:.3f}) '
+              f'length={length:.4f}m pullback={pullback:.4f}m',
+              file=_sys.stderr)
+        if length > 1e-4:
+            t_dir    = axis / length
+            start_co = start_co - t_dir * pullback
+            end_co   = end_co   + t_dir * pullback
+            print(f'  extended: start=({start_co.x:.3f},{start_co.y:.3f},{start_co.z:.3f})'
+                  f'  end=({end_co.x:.3f},{end_co.y:.3f},{end_co.z:.3f})',
+                  file=_sys.stderr)
+
+        # ── Build beam mesh ───────────────────────────────────────────────
+        beam_bm = bmesh.new()
+        _build_beam(beam_bm, start_co, end_co,
+                    depth, thickness, 0.5, 0.5, mat_index=0)
+
+        if merge_verts:
+            bmesh.ops.remove_doubles(beam_bm,
+                                     verts=list(beam_bm.verts), dist=0.001)
+
+        beam_mesh  = bpy.data.meshes.new(f'{group_name}_Beam')
+        beam_mesh.materials.append(trim_mat)
+        beam_bm.to_mesh(beam_mesh)
+        beam_bm.free()
+        beam_mesh.update()
+
+        beam_obj = bpy.data.objects.new(f'{group_name}_Beam', beam_mesh)
+        context.collection.objects.link(beam_obj)
+        move_to_collection(beam_obj, COLLECTION_TRIM)
+        generated.append(beam_obj)
+
+        # ── Boolean Difference using source mesh stored on empty ──────────
+        source_name = start_empty.get('fbxmt_source', '')
+        if not source_name:
+            source_name = end_empty.get('fbxmt_source', '')
+        source_obj = bpy.data.objects.get(source_name) if source_name else None
+
+        if source_obj and source_obj.type == 'MESH':
+            mod = beam_obj.modifiers.new(name='FBXMT_BoolTrim', type='BOOLEAN')
+            mod.operation = 'DIFFERENCE'
+            mod.object    = source_obj
+            mod.solver    = 'FLOAT'
+
+            bpy.ops.object.select_all(action='DESELECT')
+            beam_obj.select_set(True)
+            context.view_layer.objects.active = beam_obj
+            try:
+                bpy.ops.object.modifier_apply(modifier='FBXMT_BoolTrim')
+            except Exception as e:
+                import sys as _sys
+                print(f'FBXMT: Boolean apply failed for {group_name}: {e}',
+                      file=_sys.stderr)
+
+        # ── Vert markers at original empty positions ──────────────────────
+        for empty in (start_empty, end_empty):
+            marker_name = f'{empty.name}_marker'
+            me = bpy.data.meshes.new(marker_name)
+            bm = bmesh.new()
+            bm.verts.new(empty.matrix_world.translation.copy())
+            bm.to_mesh(me)
+            bm.free()
+            me.update()
+            marker_obj = bpy.data.objects.new(marker_name, me)
+            context.collection.objects.link(marker_obj)
+            vert_markers.append(marker_obj)
+
+    # ── OBJ export ────────────────────────────────────────────────────────
+    export_folder = props.export_path.strip() if props.export_path else ''
+    if export_folder and os.path.isdir(export_folder):
+        counter = 1
+        while os.path.exists(
+                os.path.join(export_folder, f'{export_stem}_{counter:03d}.obj')):
+            counter += 1
+        filepath = os.path.join(export_folder,
+                                f'{export_stem}_{counter:03d}.obj')
+
+        bpy.ops.object.select_all(action='DESELECT')
+        for obj in generated + vert_markers:
+            obj.select_set(True)
+        if generated:
+            context.view_layer.objects.active = generated[0]
+
+        bpy.ops.wm.obj_export(
+            filepath=filepath,
+            export_selected_objects=True,
+            export_materials=False,
+        )
+        export_msg = f'exported {os.path.basename(filepath)}'
+    elif export_folder:
+        export_msg = f'export folder not found: {export_folder}'
+    else:
+        export_msg = 'set export folder in Project Setup to auto-export'
+
+    # ── Remove vert markers and source empties ───────────────────────────
+    for marker_obj in vert_markers:
+        bpy.data.objects.remove(marker_obj, do_unlink=True)
+
+    for start_empty, end_empty in pairs:
+        for e in (start_empty, end_empty):
+            try:
+                bpy.data.objects.remove(e, do_unlink=True)
+            except Exception:
+                pass
+
+    bpy.ops.object.select_all(action='DESELECT')
+    return generated, export_msg
+
+
+# ---------------------------------------------------------------------------
+# Operator: Generate Parallel Beams
+
+class OT_FBXMT_Generate_Parallel(Operator):
+    bl_idname      = 'fbxmt.generate_parallel'
+    bl_label       = 'Generate Parallel Beams'
+    bl_description = ('Ray-cast from par_NNN_1 empties along stored face normals '
+                      'to find _2 positions using smart edge-on pass-through logic. '
+                      'Builds beams, boolean trims, exports OBJ.')
     bl_options     = {'REGISTER', 'UNDO'}
 
     @classmethod
@@ -1174,18 +1422,23 @@ class OT_FBXMT_Generate_Beams(Operator):
         return context.mode == 'OBJECT'
 
     def execute(self, context):
-        props = context.scene.fbxmt_props
+        import os
+        import sys as _sys
+        from mathutils import Vector
 
-        depth      = props.coving_depth
-        thickness  = props.coving_thickness
-        notch_h = props.coving_notch_h
-        notch_v = props.coving_notch_v
+        props      = context.scene.fbxmt_props
+        depsgraph  = context.evaluated_depsgraph_get()
 
-        pairs = _get_beam_empties(context)
-        if not pairs:
+        # Collect _1 empties only
+        anchors = [o for o in bpy.data.objects
+                   if o.type == 'EMPTY'
+                   and o.name.startswith('par_')
+                   and o.name.rsplit('_', 1)[-1] == '1']
+        anchors.sort(key=lambda o: o.name)
+
+        if not anchors:
             self.report({'WARNING'},
-                        'No beam empties found. Use Place Beams first, '
-                        'or add empties named beam_NNN_1 / beam_NNN_2.')
+                'No par_NNN_1 empties found — use Place Parallel Beams first.')
             return {'CANCELLED'}
 
         ensure_fbxmt_materials()
@@ -1194,17 +1447,67 @@ class OT_FBXMT_Generate_Beams(Operator):
             self.report({'ERROR'}, 'M_FBXMT_Trim not found — run Setup Scene first')
             return {'CANCELLED'}
 
-        generated = []
-        for start_empty, end_empty in pairs:
-            start_co = start_empty.matrix_world.translation
-            end_co   = end_empty.matrix_world.translation
+        generated   = []
+        vert_markers = []
+        pullback    = 0.25
+        skipped     = 0
 
-            beam_bm = bmesh.new()
+        for anchor in anchors:
+            # Read stored normal
+            raw_normal = anchor.get('fbxmt_normal', None)
+            if raw_normal is None:
+                print(f'FBXMT Parallel: {anchor.name} has no stored normal — skipping',
+                      file=_sys.stderr)
+                skipped += 1
+                continue
+
+            ray_origin = Vector(anchor.matrix_world.translation)
+            ray_dir    = Vector(raw_normal).normalized()
+
+            # Get source mesh for ray-cast
+            source_name = anchor.get('fbxmt_source', '')
+            source_obj  = bpy.data.objects.get(source_name) if source_name else None
+
+            if source_obj is None or source_obj.type != 'MESH':
+                print(f'FBXMT Parallel: {anchor.name} source {source_name!r} not found — skipping',
+                      file=_sys.stderr)
+                skipped += 1
+                continue
+
+            # Smart ray-cast to find _2 position
+            hit_loc = _smart_raycast(source_obj, ray_origin, ray_dir, depsgraph)
+
+            if hit_loc is None:
+                print(f'FBXMT Parallel: {anchor.name} ray found no terminator — skipping',
+                      file=_sys.stderr)
+                skipped += 1
+                continue
+
+            print(f'FBXMT Parallel: {anchor.name} '
+                  f'origin=({ray_origin.x:.3f},{ray_origin.y:.3f},{ray_origin.z:.3f}) '
+                  f'normal=({ray_dir.x:.3f},{ray_dir.y:.3f},{ray_dir.z:.3f}) '
+                  f'hit=({hit_loc.x:.3f},{hit_loc.y:.3f},{hit_loc.z:.3f}) '
+                  f'length={(hit_loc-ray_origin).length:.3f}m',
+                  file=_sys.stderr)
+
+            # Extend both ends outward for boolean
+            axis   = hit_loc - ray_origin
+            length = axis.length
+            if length < 1e-4:
+                skipped += 1
+                continue
+            t_dir    = axis / length
+            start_co = ray_origin - t_dir * pullback
+            end_co   = hit_loc   + t_dir * pullback
+
+            # Build beam
+            group_name = anchor.name.rsplit('_', 1)[0]
+            beam_bm    = bmesh.new()
             _build_beam(beam_bm, start_co, end_co,
-                        depth, thickness, notch_h, notch_v, mat_index=0)
+                        props.coving_depth, props.coving_thickness,
+                        0.5, 0.5, mat_index=0)
 
-            group_name = start_empty.name.rsplit('_', 1)[0]
-            beam_mesh  = bpy.data.meshes.new(f'{group_name}_Beam')
+            beam_mesh = bpy.data.meshes.new(f'{group_name}_Beam')
             beam_mesh.materials.append(trim_mat)
             beam_bm.to_mesh(beam_mesh)
             beam_bm.free()
@@ -1215,7 +1518,271 @@ class OT_FBXMT_Generate_Beams(Operator):
             move_to_collection(beam_obj, COLLECTION_TRIM)
             generated.append(beam_obj)
 
-        self.report({'INFO'}, f'{len(generated)} beam(s) generated')
+            # Vert markers
+            for pos in (ray_origin, hit_loc):
+                me = bpy.data.meshes.new(f'{group_name}_marker')
+                bm = bmesh.new()
+                bm.verts.new(pos.copy())
+                bm.to_mesh(me)
+                bm.free()
+                me.update()
+                mo = bpy.data.objects.new(f'{group_name}_marker', me)
+                context.collection.objects.link(mo)
+                vert_markers.append(mo)
+
+            # Boolean trim
+            bpy.ops.object.select_all(action='DESELECT')
+            beam_obj.select_set(True)
+            context.view_layer.objects.active = beam_obj
+
+            mod = beam_obj.modifiers.new(name='FBXMT_BoolTrim', type='BOOLEAN')
+            mod.operation = 'DIFFERENCE'
+            mod.object    = source_obj
+            mod.solver    = 'FLOAT'
+            # Modifier left in stack for fine-tuning after generation
+
+            # Remove anchor empty
+            try:
+                bpy.data.objects.remove(anchor, do_unlink=True)
+            except Exception:
+                pass
+
+        # OBJ export
+        export_folder = props.export_path.strip() if props.export_path else ''
+        if export_folder and os.path.isdir(export_folder):
+            counter = 1
+            while os.path.exists(
+                    os.path.join(export_folder, f'beams_parallel_{counter:03d}.obj')):
+                counter += 1
+            filepath = os.path.join(export_folder,
+                                    f'beams_parallel_{counter:03d}.obj')
+            bpy.ops.object.select_all(action='DESELECT')
+            for obj in generated + vert_markers:
+                obj.select_set(True)
+            if generated:
+                context.view_layer.objects.active = generated[0]
+            bpy.ops.wm.obj_export(
+                filepath=filepath,
+                export_selected_objects=True,
+                export_materials=False,
+            )
+            export_msg = f'exported {os.path.basename(filepath)}'
+        elif export_folder:
+            export_msg = f'export folder not found: {export_folder}'
+        else:
+            export_msg = 'set export folder in Project Setup to auto-export'
+
+        for mo in vert_markers:
+            bpy.data.objects.remove(mo, do_unlink=True)
+
+        bpy.ops.object.select_all(action='DESELECT')
+
+        msg = f'{len(generated)} parallel beam(s) generated'
+        if skipped:
+            msg += f' ({skipped} skipped — check console)'
+        msg += f' — {export_msg}'
+        self.report({'INFO'}, msg)
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Operator: Generate Spoke Beams
+
+class OT_FBXMT_Generate_Spokes(Operator):
+    bl_idname      = 'fbxmt.generate_spokes'
+    bl_label       = 'Generate Spoke Beams'
+    bl_description = ('Generate beam geometry from spk_NNN_1/2 empties. '
+                      'Uses coving Depth (V) / Thickness (H). '
+                      'Exports OBJ to export folder if set.')
+    bl_options     = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT'
+
+    def execute(self, context):
+        props = context.scene.fbxmt_props
+        pairs = _get_empties_by_prefix('spk')
+        if not pairs:
+            self.report({'WARNING'},
+                'No spk_NNN_1/2 empties found — use Place Spoke Beams first.')
+            return {'CANCELLED'}
+
+        generated, export_msg = _generate_beams_from_pairs(
+            context, pairs,
+            depth=props.coving_depth,
+            thickness=props.coving_thickness,
+            export_stem='beams_spoke',
+            merge_verts=False,
+        )
+        if not generated:
+            self.report({'ERROR'}, export_msg)
+            return {'CANCELLED'}
+        self.report({'INFO'},
+                    f'{len(generated)} spoke beam(s) generated — {export_msg}')
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Operator: Generate Curve Beams
+
+class OT_FBXMT_Generate_Curve(Operator):
+    bl_idname      = 'fbxmt.generate_curve'
+    bl_label       = 'Generate Curve Beams'
+    bl_description = ('Generate mitered curve beam from crv_NNN_1/2 empties. '
+                      'All segments built in one sweep with mitered joins. '
+                      'Uses curve-specific Depth (V) / Thickness (H). '
+                      'Exports OBJ to export folder if set.')
+    bl_options     = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT'
+
+    def execute(self, context):
+        import os
+        from mathutils import Vector
+        props = context.scene.fbxmt_props
+
+        pairs = _get_empties_by_prefix('crv')
+        if not pairs:
+            self.report({'WARNING'},
+                'No crv_NNN_1/2 empties found — use Place Curve Beams first.')
+            return {'CANCELLED'}
+
+        ensure_fbxmt_materials()
+        trim_mat = bpy.data.materials.get('M_FBXMT_Trim')
+        if trim_mat is None:
+            self.report({'ERROR'}, 'M_FBXMT_Trim not found — run Setup Scene first')
+            return {'CANCELLED'}
+
+        # Collect ordered ring positions from paired empties.
+        # Each pair is (ring_i, ring_i+1) — take _1 from every pair plus the
+        # final _2 to reconstruct the full ring sequence without duplicates.
+        ring_positions = []
+        for i, (e1, e2) in enumerate(pairs):
+            ring_positions.append(Vector(e1.matrix_world.translation))
+            if i == len(pairs) - 1:
+                ring_positions.append(Vector(e2.matrix_world.translation))
+
+        depth     = props.crv_depth
+        thickness = props.crv_thickness
+        pullback  = 0.25   # extend ends outward for boolean
+
+        # Extend first and last ring outward along the curve axis
+        if len(ring_positions) >= 2:
+            t_start = (ring_positions[0]  - ring_positions[1]).normalized()
+            t_end   = (ring_positions[-1] - ring_positions[-2]).normalized()
+            ring_positions[0]  = ring_positions[0]  + t_start * pullback
+            ring_positions[-1] = ring_positions[-1] + t_end   * pullback
+
+        # Build in one shot with mitered joins
+        curve_bm = bmesh.new()
+        _build_curve_beam(curve_bm, ring_positions, depth, thickness, mat_index=0)
+
+        curve_mesh = bpy.data.meshes.new('CurveBeam')
+        curve_mesh.materials.append(trim_mat)
+        curve_bm.to_mesh(curve_mesh)
+        curve_bm.free()
+        curve_mesh.update()
+
+        curve_obj = bpy.data.objects.new('CurveBeam', curve_mesh)
+        context.collection.objects.link(curve_obj)
+        move_to_collection(curve_obj, COLLECTION_TRIM)
+
+        # Boolean trim using source from first empty
+        source_name = pairs[0][0].get('fbxmt_source', '') or                       pairs[0][1].get('fbxmt_source', '')
+        source_obj  = bpy.data.objects.get(source_name) if source_name else None
+
+        if source_obj and source_obj.type == 'MESH':
+            mod = curve_obj.modifiers.new(name='FBXMT_BoolTrim', type='BOOLEAN')
+            mod.operation = 'DIFFERENCE'
+            mod.object    = source_obj
+            mod.solver    = 'FLOAT'
+            # Modifier left in stack for fine-tuning after generation
+
+        # Remove empties
+        for e1, e2 in pairs:
+            for e in (e1, e2):
+                try:
+                    bpy.data.objects.remove(e, do_unlink=True)
+                except Exception:
+                    pass
+
+        # Vert markers for OBJ export
+        vert_markers = []
+        for pos in ring_positions:
+            me = bpy.data.meshes.new('crv_marker')
+            bm = bmesh.new()
+            bm.verts.new(pos)
+            bm.to_mesh(me)
+            bm.free()
+            me.update()
+            mo = bpy.data.objects.new('crv_marker', me)
+            context.collection.objects.link(mo)
+            vert_markers.append(mo)
+
+        # OBJ export
+        export_folder = props.export_path.strip() if props.export_path else ''
+        if export_folder and os.path.isdir(export_folder):
+            counter = 1
+            while os.path.exists(
+                    os.path.join(export_folder, f'beams_curve_{counter:03d}.obj')):
+                counter += 1
+            filepath = os.path.join(export_folder,
+                                    f'beams_curve_{counter:03d}.obj')
+            bpy.ops.object.select_all(action='DESELECT')
+            curve_obj.select_set(True)
+            for mo in vert_markers:
+                mo.select_set(True)
+            context.view_layer.objects.active = curve_obj
+            bpy.ops.wm.obj_export(
+                filepath=filepath,
+                export_selected_objects=True,
+                export_materials=False,
+            )
+            export_msg = f'exported {os.path.basename(filepath)}'
+        elif export_folder:
+            export_msg = f'export folder not found: {export_folder}'
+        else:
+            export_msg = 'set export folder in Project Setup to auto-export'
+
+        for mo in vert_markers:
+            bpy.data.objects.remove(mo, do_unlink=True)
+
+        bpy.ops.object.select_all(action='DESELECT')
+        self.report({'INFO'}, f'Curve beam generated — {export_msg}')
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Legacy Generate Beams (beam_NNN prefix) — kept for backwards compat
+
+class OT_FBXMT_Generate_Beams(Operator):
+    bl_idname      = 'fbxmt.generate_beams'
+    bl_label       = 'Generate Beams (Legacy)'
+    bl_description = 'Legacy — generates from beam_NNN_1/2 empties'
+    bl_options     = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'OBJECT'
+
+    def execute(self, context):
+        props = context.scene.fbxmt_props
+        pairs = _get_empties_by_prefix('beam')
+        if not pairs:
+            self.report({'WARNING'}, 'No legacy beam_NNN_1/2 empties found.')
+            return {'CANCELLED'}
+        generated, export_msg = _generate_beams_from_pairs(
+            context, pairs,
+            depth=props.coving_depth,
+            thickness=props.coving_thickness,
+            export_stem='beams_legacy',
+            merge_verts=False,
+        )
+        self.report({'INFO'},
+                    f'{len(generated)} legacy beam(s) generated — {export_msg}')
         return {'FINISHED'}
 
 
@@ -1224,5 +1791,8 @@ class OT_FBXMT_Generate_Beams(Operator):
 
 classes = (
     OT_FBXMT_Generate_Coving,
+    OT_FBXMT_Generate_Parallel,
+    OT_FBXMT_Generate_Spokes,
+    OT_FBXMT_Generate_Curve,
     OT_FBXMT_Generate_Beams,
 )

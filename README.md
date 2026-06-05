@@ -1,10 +1,96 @@
-# FBX Mapper's Toolkit — v0.2.41
+# FBX Mapper's Toolkit — v0.25.0
 
 UV unwrap, material management, import/export, dihedral trim generation, ceiling deco (coving), and beam placement for UE5/UT99 mapping workflows in Blender 5.1+.
 
 ---
 
-## What's new in v0.2.41
+## What's new in v0.25.0
+
+### Ceiling Deco — Beam Generation system (complete)
+
+Three independent beam generation workflows, each with Place → Generate pipeline:
+
+#### Spoke Beams (`spk_NNN_1/2`)
+Beams radiate from the smaller (hub) face group toward the larger (rim) face group. Hub/rim auto-detected by face count. Optional fixed spoke length and grow-from-both-ends mode.
+
+| Prop | Description |
+|---|---|
+| Count | Number of spoke pairs |
+| Spacing | Arc-length interval instead of count (0 = use count) |
+| Vert Offset | Vertical shift on all empties |
+| Spoke Length | Fixed length (0 = face-to-face distance) |
+| Grow From Both Ends | When length set, empties grow inward from both ends |
+
+#### Parallel Beams (`par_NNN_1`)
+Single face strip selection. Places `_1` empties along the strip storing the face normal. At Generate time a smart ray-cast fires along each stored normal to find `_2` — the ray passes through edge-on faces (parallel to the ray direction) and terminates at the first genuinely perpendicular face, correctly navigating concave corners, convex steps, and curved geometry.
+
+**Ray preview** — Preview Rays button fires the ray-cast and draws the path (including pass-through segments) and terminus dot as a red overlay in all 3D viewports. Works in both Edit and Object Mode. Auto-updates when placement settings change.
+
+| Prop | Description |
+|---|---|
+| Count | Number of anchor empties |
+| Spacing | Arc-length interval instead of count |
+| Inset Start | Offset first empty from start edge (negative = outward) |
+| Inset End | Offset last empty from end edge |
+| Vert Offset | Vertical shift |
+
+**Live update** — changing any parallel prop while `par_NNN_1` empties exist in the scene automatically clears and re-places them using the stored chain data. No need to re-enter Edit Mode.
+
+#### Curve Beams (`crv_NNN_1/2`)
+Beams follow the midpoint arc between two face strip selections. Ring count derived from geometry (one ring per vert pair) — no manual count needed. Segments are mitered at every interior ring for clean joins.
+
+| Prop | Description |
+|---|---|
+| Inset Start | Arc-length offset from start end (0 = full selection) |
+| Inset End | Arc-length offset from end |
+| Vert Offset | Vertical shift |
+| Depth (V) | Profile drop |
+| Thickness (H) | Profile width |
+
+#### Shared generation features
+- **Boolean trim** — each generated beam gets an `FBXMT_BoolTrim` Boolean Difference modifier referencing the source mesh (stored at Place time). Left unapplied for fine-tuning — apply manually when satisfied.
+- **Overrun** — beam ends extend 0.25m beyond the empty position so the boolean has geometry to cut cleanly.
+- **Source mesh stored per-empty** — supports multi-mesh scenes; each empty carries `fbxmt_source` so different beams can boolean against different objects.
+- **OBJ export** — geometry + orphaned vert markers exported to the main export folder on Generate.
+- **Coving normals** — generated coving now has correctly outward-facing normals (required for ray-cast and boolean operations).
+- **Empty display** — all placement empties are red SPHERE type with names shown in viewport.
+
+#### Arc measurement
+All three systems measure arc length by walking the actual boundary vert chain (not face centroids), deduplicated to one vert per unique XY position at the strip midplane Z. Equal-interval sampling uses `(i+1)/(n+1)` fractions for consistent margins.
+
+---
+
+## What's new in v0.2.43 (previous release)
+
+### Beam Placement — face-anchored algorithm rewrite
+
+The beam placement operator has been rewritten to produce correct results on both straight and curved geometry.
+
+**Old behaviour:** Beams were distributed along the vector between the two face group centroids, producing a daisy-chain of sub-spans that piled up in the middle on any non-trivial count.
+
+**New behaviour:**
+
+- Each face group is walked in adjacency order (flood-fill), giving a topologically consistent ordering along arc strips or straight runs.
+- N sample positions are drawn evenly along each group's ordered face-centre sequence using fractional interpolation — smooth even when face count is coarse.
+- Sample `i` from group A → `_1` empty; sample `i` from group B → `_2` empty. Pairs are anchored independently to their respective face groups.
+- On **straight geometry** beams run parallel (each pair spans A→B at the same angle).
+- On **curved geometry** beams spoke naturally — no explicit mode detection needed, the face-centre sampling handles it.
+- **Spacing mode** now measures arc length along group A's face-centre sequence and derives count from that, rather than from the straight-line centroid distance.
+- **Collision check** now tests newly placed pairs against pre-existing pairs only (not new pairs against each other), eliminating false positives on dense curved placements.
+- `beam_offset_h` (horizontal centroid offset) removed from the panel — superseded by the face-anchored approach. The prop remains registered so existing `.blend` files are not broken.
+- Live pair count readout added to the Beam Placement panel box.
+
+| Parameter | Description | Default |
+|---|---|---|
+| Count | Number of beam pairs to place | 1 |
+| Spacing | Arc-length interval along face group A instead of count (0 = use count) | 0 m |
+| Vert Offset | Vertical shift applied to all empties | 0 m |
+
+After placement, if an export folder is set in Project Setup, a `beam_empties_NNN.obj` is written automatically to that folder. Each beam pair is an `o` object entry containing two point vertices (one per empty) in OBJ coordinate space. NNN auto-increments so repeated placements never overwrite a previous export.
+
+---
+
+## What's new in v0.2.41 (previous release)
 
 ### Ceiling Deco System — coving and beam placement
 
@@ -103,7 +189,7 @@ No-chamfer mode collapses to 6 unique positions (v2=v1, v4=v3, v6=v7, v8=v9).
 
 ## Installation
 
-1. Download `fbx_mappers_toolkit_v0.2.41.zip`
+1. Download `fbx_mappers_toolkit_v0.25.0.zip`
 2. In Blender 5.1+: **Edit → Preferences → Extensions → Install from Disk**
 3. Select the zip — do not unzip first
 4. Enable the extension if not auto-enabled

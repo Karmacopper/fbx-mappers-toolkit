@@ -114,17 +114,10 @@ class FBXMT_AddonPreferences(AddonPreferences):
         default=True,
     )
 
-    # ── Dev export settings ──────────────────────────────────────────────────
-    trim2_auto_export: bpy.props.BoolProperty(
-        name="Auto-export OBJ after Generate Trim",
-        description="Automatically export the generated trim as OBJ after each run",
-        default=False,
-    )
-    trim2_export_dir: bpy.props.StringProperty(
-        name="Export Directory",
-        description="Folder to export OBJ files into (defaults to blend file directory)",
-        subtype="DIR_PATH",
-        default="",
+    enable_trim_tools: bpy.props.BoolProperty(
+        name="Enable FBXMT Trim Tools",
+        description="Show the FBXMT Trim N-panel tab (Trim Generation and Ceiling Deco). Disable to hide it when not needed",
+        default=True,
     )
 
     def draw(self, context):
@@ -134,12 +127,7 @@ class FBXMT_AddonPreferences(AddonPreferences):
         layout.label(text="Open the 3D Viewport, press N, select the FBX Toolkit tab.")
         layout.prop(self, "show_setup_on_new")
         layout.prop(self, "enable_primitives")
-        layout.separator()
-        layout.label(text="Dev: Trim2 Auto Export", icon="EXPORT")
-        layout.prop(self, "trim2_auto_export")
-        col = layout.column()
-        col.enabled = self.trim2_auto_export
-        col.prop(self, "trim2_export_dir")
+        layout.prop(self, "enable_trim_tools")
         layout.separator()
         row = layout.row()
         row.label(text=f"FBXMT v{__version__}", icon="CONSOLE")
@@ -186,7 +174,7 @@ class FBXMT_PT_SceneSetup(Panel):
     bl_label       = "Scene Setup"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 5
+    bl_order       = 0
 
     def draw(self, context):
         layout = self.layout
@@ -390,10 +378,9 @@ class FBXMT_PT_Export(Panel):
     def draw(self, context):
         layout = self.layout
         props  = context.scene.fbxmt_props
-        prefs  = context.scene.fbxmt_prefs_global
 
         if not props.export_path:
-            layout.label(text="No export folder set - open Preferences panel", icon="ERROR")
+            layout.label(text="No export folder set — open Project Setup", icon="ERROR")
         else:
             layout.label(text=props.export_path, icon="FILE_FOLDER")
 
@@ -431,75 +418,44 @@ class FBXMT_PT_Export(Panel):
         row.operator("unreal.collision_exporter", text="Export Selected", icon="EXPORT")
 
 
-# ─── Trim Generation ──────────────────────────────────────────────────────────
 
-class FBXMT_PT_TrimGen(Panel):
+# ─── FBXMT Trim tab ───────────────────────────────────────────────────────────
+
+class FBXMT_PT_TrimMain(Panel):
     bl_space_type  = "VIEW_3D"
     bl_region_type = "UI"
-    bl_label       = "Trim Generation"
-    bl_category    = "FBX Toolkit"
-    bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 6
-    bl_options     = {'DEFAULT_CLOSED'}
+    bl_label       = "FBXMT Trim"
+    bl_category    = "FBXMT Trim"
 
     def draw(self, context):
-        layout = self.layout
-        props  = context.scene.fbxmt_props
-        in_edit = context.mode == 'EDIT_MESH'
-
-        # Dimensions
-        box_fw = layout.box()
-        box_fw.label(text="Floor / Wall Trim", icon='EDGESEL')
-        col = box_fw.column(align=True)
-        col.prop(props, 'trim_thickness')
-        col.prop(props, 'trim_horiz_cover', text='Floor Cover Depth')
-        col.prop(props, 'trim_vert_cover',  text='Wall Cover Depth')
-
-        box_ww = layout.box()
-        box_ww.label(text="Wall Run Trim", icon='EDGESEL')
-        col_ww = box_ww.column(align=True)
-        col_ww.prop(props, 'trim_wall_a_cover', text='Wall A Depth')
-        col_ww.prop(props, 'trim_wall_b_cover', text='Wall B Depth')
-
-        layout.separator()
-
-        # Cap style
-        box = layout.box()
-        box.label(text="Cap Style", icon='MOD_BEVEL')
-        col2 = box.column(align=True)
-        row = col2.row(align=True)
-        row.label(text="B→D Cap")
-        row.prop(props, 'trim_chamfer_BD', text="Chamfer", toggle=True)
-        row2 = col2.row(align=True)
-        row2.label(text="D→F Cap")
-        row2.prop(props, 'trim_chamfer_DF', text="Chamfer", toggle=True)
-
-        layout.separator()
-
-        if not in_edit:
-            col3 = layout.column()
-            col3.label(text="Enter Edit Mode and", icon='INFO')
-            col3.label(text="select seam edges first.")
-
-        row3 = layout.row()
-        row3.scale_y = 1.4
-        row3.enabled = in_edit
-        row3.operator('fbxmt.generate_trim', text='Generate Trim', icon='MOD_SOLIDIFY')
+        from . import __version__
+        self.layout.label(text=f"v{__version__}", icon='MOD_SOLIDIFY')
 
 
 class FBXMT_PT_TrimGen2(Panel):
     bl_space_type  = "VIEW_3D"
     bl_region_type = "UI"
-    bl_label       = "FBX Trim"
-    bl_category    = "FBX Toolkit"
-    bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 7
+    bl_label       = "Trim Generation"
+    bl_category    = "FBXMT Trim"
+    bl_parent_id   = "FBXMT_PT_TrimMain"
+    bl_order       = 0
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout  = self.layout
         props   = context.scene.fbxmt_props
         in_edit = context.mode == 'EDIT_MESH'
+
+        # ── Overlay toggle ────────────────────────────────────────────────────
+        row = layout.row(align=True)
+        row.prop(
+            props, 'show_trim_overlay',
+            text='A/B Overlay',
+            icon='SHADING_SOLID' if props.show_trim_overlay else 'SHADING_WIRE',
+            toggle=True,
+        )
+
+        layout.separator()
 
         # ── Profile (shared) ─────────────────────────────────────────────────
         box = layout.box()
@@ -568,13 +524,6 @@ class FBXMT_PT_TrimGen2(Panel):
                      text='Generate Trim',
                      icon='MOD_SOLIDIFY')
 
-        # Dev: auto-export toggle (stored per-scene, survives reinstall)
-        row2 = layout.row(align=True)
-        row2.prop(props, 'trim2_auto_export', text='', icon='EXPORT')
-        sub = row2.row()
-        sub.enabled = props.trim2_auto_export
-        sub.prop(props, 'trim2_export_dir', text='')
-
 
 # ---------------------------------------------------------------------------
 # Ceiling Deco panel
@@ -583,9 +532,9 @@ class FBXMT_PT_CeilingDeco(Panel):
     bl_space_type  = "VIEW_3D"
     bl_region_type = "UI"
     bl_label       = "Ceiling Deco"
-    bl_category    = "FBX Toolkit"
-    bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 8
+    bl_category    = "FBXMT Trim"
+    bl_parent_id   = "FBXMT_PT_TrimMain"
+    bl_order       = 1
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -594,77 +543,165 @@ class FBXMT_PT_CeilingDeco(Panel):
         in_edit = context.mode == 'EDIT_MESH'
         in_obj  = context.mode == 'OBJECT'
 
-        # ── Shared profile ────────────────────────────────────────────────────
+        # ── Shared profile (Coving + Parallel + Spoke) ────────────────────────
         box = layout.box()
-        box.label(text='Profile (Coving & Beams)', icon='EDGESEL')
+        box.label(text='Profile (Coving, Parallel & Spoke)', icon='EDGESEL')
         col = box.column(align=True)
-        col.prop(props, 'coving_depth',      text='Depth (wall)')
-        col.prop(props, 'coving_thickness',  text='Thickness (ceiling)')
-        col.prop(props, 'coving_notch_h', text='Notch H')
-        col.prop(props, 'coving_notch_v', text='Notch V')
+        col.prop(props, 'coving_depth',     text='Depth (V)')
+        col.prop(props, 'coving_thickness', text='Thickness (H)')
+        col.prop(props, 'coving_notch_v',   text='Notch V')
+        col.prop(props, 'coving_notch_h',   text='Notch H')
 
         layout.separator()
 
         # ── Generate Coving ───────────────────────────────────────────────────
         box_cov = layout.box()
         box_cov.label(text='Coving', icon='MOD_SOLIDIFY')
-
         if not in_edit:
-            col_info = box_cov.column()
-            col_info.label(text='Enter Edit Mode and', icon='INFO')
-            col_info.label(text='select ceiling/wall seam edges.')
-
-        row_cov = box_cov.row()
-        row_cov.scale_y = 1.4
-        row_cov.enabled = in_edit
-        row_cov.operator('fbxmt.generate_coving',
-                         text='Generate Coving',
-                         icon='MOD_SOLIDIFY')
+            c = box_cov.column()
+            c.label(text='Enter Edit Mode and', icon='INFO')
+            c.label(text='select ceiling/wall seam edges.')
+        row = box_cov.row()
+        row.scale_y = 1.4
+        row.enabled = in_edit
+        row.operator('fbxmt.generate_coving',
+                     text='Generate Coving', icon='MOD_SOLIDIFY')
 
         layout.separator()
 
-        # ── Beam Placement ────────────────────────────────────────────────────
-        box_bp = layout.box()
-        box_bp.label(text='Beam Placement', icon='EMPTY_AXIS')
+        # ── Parallel Beams ────────────────────────────────────────────────────
+        box_par = layout.box()
+        box_par.label(text='Parallel Beams', icon='SNAP_EDGE')
+        col = box_par.column(align=True)
+        row_count = col.row()
+        row_count.enabled = props.par_spacing == 0.0
+        row_count.prop(props, 'par_count',   text='Count')
+        row_spac = col.row()
+        row_spac.enabled = True
+        row_spac.prop(props, 'par_spacing',  text='Spacing')
+        col.prop(props, 'par_inset_start',   text='Inset Start')
+        col.prop(props, 'par_inset_end',     text='Inset End')
+        col.prop(props, 'par_offset_v',      text='Vert Offset')
 
-        col_bp = box_bp.column(align=True)
-        col_bp.prop(props, 'beam_count',    text='Count')
-        col_bp.prop(props, 'beam_spacing',  text='Spacing')
-        col_bp.prop(props, 'beam_offset_h', text='Horiz Offset')
-        col_bp.prop(props, 'beam_offset_v', text='Vert Offset')
-        box_bp.prop(props, 'beam_snap_to_face', text='Snap to Face Centre')
+
+        try:
+            from .ceiling_deco import _get_empties_by_prefix
+            n_par = len(_get_empties_by_prefix('par'))
+            if n_par:
+                box_par.label(text=f'{n_par} pair(s) in scene', icon='CHECKMARK')
+        except Exception:
+            pass
 
         if not in_edit:
-            col_info2 = box_bp.column()
-            col_info2.label(text='Enter Edit Mode, select', icon='INFO')
-            col_info2.label(text='two face groups, then place.')
+            c = box_par.column()
+            c.label(text='Enter Edit Mode, select', icon='INFO')
+            c.label(text='one face strip, then place.')
 
-        row_bp = box_bp.row()
-        row_bp.scale_y = 1.2
-        row_bp.enabled = in_edit
-        row_bp.operator('fbxmt.place_beams',
-                        text='Place Beams',
-                        icon='EMPTY_AXIS')
+        row = box_par.row(align=True)
+        row.scale_y = 1.2
+        row.enabled = in_edit
+        row.operator('fbxmt.place_parallel',
+                     text='Place Parallel', icon='SNAP_EDGE')
 
-        row_clr = box_bp.row()
-        row_clr.enabled = in_obj
-        row_clr.operator('fbxmt.clear_beams',
-                         text='Clear Beam Empties',
-                         icon='X')
+        row_prev = box_par.row()
+        row_prev.operator('fbxmt.preview_parallel_rays',
+                          text='Preview Rays', icon='HIDE_OFF')
+
+        row2 = box_par.row(align=True)
+        row2.enabled = in_obj
+        row2.operator('fbxmt.generate_parallel',
+                      text='Generate Parallel', icon='MESH_CUBE')
+        row2.alert = True
+        row2.operator('fbxmt.clear_parallel',
+                      text='', icon='X')
+        row2.alert = False
 
         layout.separator()
 
-        # ── Generate Beams ────────────────────────────────────────────────────
-        box_gen = layout.box()
-        box_gen.label(text='Beam Generation', icon='MESH_CUBE')
+        # ── Spoke Beams ───────────────────────────────────────────────────────
+        box_spk = layout.box()
+        box_spk.label(text='Spoke Beams', icon='PIVOT_CURSOR')
+        col = box_spk.column(align=True)
+        col.prop(props, 'spk_count',    text='Count')
+        col.prop(props, 'spk_spacing',  text='Spacing')
+        col.prop(props, 'spk_offset_v', text='Vert Offset')
+        col.prop(props, 'spk_length',   text='Spoke Length')
+        sub = col.row()
+        sub.enabled = props.spk_length > 0.0
+        sub.prop(props, 'spk_both_ends', text='Grow From Both Ends')
 
-        if not in_obj:
-            box_gen.label(text='Switch to Object Mode', icon='INFO')
-            box_gen.label(text='to generate beams.')
+        try:
+            n_spk = len(_get_empties_by_prefix('spk'))
+            if n_spk:
+                box_spk.label(text=f'{n_spk} pair(s) in scene', icon='CHECKMARK')
+        except Exception:
+            pass
 
-        row_gen = box_gen.row()
-        row_gen.scale_y = 1.4
-        row_gen.enabled = in_obj
-        row_gen.operator('fbxmt.generate_beams',
-                         text='Generate Beams',
-                         icon='MESH_CUBE')
+        if not in_edit:
+            c = box_spk.column()
+            c.label(text='Enter Edit Mode, select', icon='INFO')
+            c.label(text='two face groups, then place.')
+
+        row = box_spk.row()
+        row.scale_y = 1.2
+        row.enabled = in_edit
+        row.operator('fbxmt.place_spokes',
+                     text='Place Spokes', icon='PIVOT_CURSOR')
+
+        row2 = box_spk.row(align=True)
+        row2.enabled = in_obj
+        row2.operator('fbxmt.generate_spokes',
+                      text='Generate Spokes', icon='MESH_CUBE')
+        row2.alert = True
+        row2.operator('fbxmt.clear_spokes',
+                      text='', icon='X')
+        row2.alert = False
+
+        layout.separator()
+
+        # ── Curve Beams ───────────────────────────────────────────────────────
+        box_crv = layout.box()
+        box_crv.label(text='Curve Beams', icon='CURVE_PATH')
+        col = box_crv.column(align=True)
+        col.prop(props, 'crv_offset_v',    text='Vert Offset')
+        col.prop(props, 'crv_inset_start', text='Inset Start')
+        col.prop(props, 'crv_inset_end',   text='Inset End')
+        col.separator()
+        col.prop(props, 'crv_depth',       text='Depth (V)')
+        col.prop(props, 'crv_thickness',   text='Thickness (H)')
+
+        try:
+            n_crv = len(_get_empties_by_prefix('crv'))
+            if n_crv:
+                box_crv.label(text=f'{n_crv} pair(s) in scene', icon='CHECKMARK')
+        except Exception:
+            pass
+
+        if not in_edit:
+            c = box_crv.column()
+            c.label(text='Enter Edit Mode, select', icon='INFO')
+            c.label(text='two face groups, then place.')
+
+        layout.separator()
+        box_dbg = layout.box()
+        box_dbg.label(text='Debug', icon='CONSOLE')
+        box_dbg.prop(props, 'beam_debug', text='Debug Placement')
+        if props.beam_debug:
+            box_dbg.label(text='Console output + index', icon='INFO')
+            box_dbg.label(text='labels on empties when placed.', icon='BLANK1')
+
+        row = box_crv.row()
+        row.scale_y = 1.2
+        row.enabled = in_edit
+        row.operator('fbxmt.place_curve',
+                     text='Place Curve', icon='CURVE_PATH')
+
+        row2 = box_crv.row(align=True)
+        row2.enabled = in_obj
+        row2.operator('fbxmt.generate_curve',
+                      text='Generate Curve', icon='MESH_CUBE')
+        row2.alert = True
+        row2.operator('fbxmt.clear_curve',
+                      text='', icon='X')
+        row2.alert = False
+

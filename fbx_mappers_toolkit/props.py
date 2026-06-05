@@ -280,6 +280,16 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         default='',
     )
 
+
+def _par_prop_update(self, context):
+    """Forward parallel prop changes to beam_placement auto-replace."""
+    try:
+        from .beam_placement import _par_update_cb
+        _par_update_cb(self, context)
+    except Exception:
+        pass
+
+
 class FBXMT_Props(PropertyGroup):
     """Per-scene operational settings. Stored on Scene.fbxmt_props.
     These vary between projects and are intentionally per-blend-file.
@@ -291,16 +301,6 @@ class FBXMT_Props(PropertyGroup):
         description="Export destination - saved with the blend file",
         maxlen=1024,
         subtype="DIR_PATH",
-    )
-    trim2_auto_export: bpy.props.BoolProperty(
-        name="Auto-export OBJ after Generate Trim",
-        default=False,
-    )
-    trim2_export_dir: bpy.props.StringProperty(
-        name="Trim Export Directory",
-        description="Folder to export trim OBJ files into",
-        subtype="DIR_PATH",
-        default="",
     )
     geo_texel_density: bpy.props.IntProperty(
         name="Texel Density",
@@ -558,32 +558,177 @@ class FBXMT_Props(PropertyGroup):
         step=1, precision=3,
     )
 
-    # Beam placement
+    # ── Legacy beam props (kept registered, not drawn) ──────────────────────
     beam_count: bpy.props.IntProperty(
-        name='Count',
-        description='Number of beam pairs to place across the selected span',
-        default=1, min=1, max=64,
-    )
+        name='Count', description='Legacy — superseded', default=1, min=1, max=64)
     beam_spacing: bpy.props.FloatProperty(
+        name='Spacing', description='Legacy — superseded',
+        default=0.0, min=0.0, max=100.0, unit='LENGTH', step=5, precision=3)
+    beam_offset_h: bpy.props.FloatProperty(
+        name='Horiz Offset', description='Legacy — superseded',
+        default=0.0, min=-10.0, max=10.0, unit='LENGTH', step=1, precision=3)
+    beam_offset_v: bpy.props.FloatProperty(
+        name='Vert Offset', description='Legacy — superseded',
+        default=0.0, min=-10.0, max=10.0, unit='LENGTH', step=1, precision=3)
+    beam_snap_to_face: bpy.props.BoolProperty(
+        name='Snap to Face Centre', description='Legacy — superseded', default=False)
+
+    # ── Parallel beam props ───────────────────────────────────────────────────
+    par_count: bpy.props.IntProperty(
+        name='Count',
+        description='Number of parallel beam pairs to place',
+        default=3, min=1, max=64,
+        update=_par_prop_update,
+    )
+    par_spacing: bpy.props.FloatProperty(
         name='Spacing',
-        description='Place beams at this interval instead of count (0 = use count)',
+        description='Place beams at this arc-length interval instead of count (0 = use count)',
+        default=0.0, min=0.0, max=100.0,
+        unit='LENGTH', step=5, precision=3,
+        update=_par_prop_update,
+    )
+    par_inset_start: bpy.props.FloatProperty(
+        name='Inset Start',
+        description='Offset first _1 empty inward from the start edge of the selection (negative = outward)',
+        default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+        update=_par_prop_update,
+    )
+    par_inset_end: bpy.props.FloatProperty(
+        name='Inset End',
+        description='Offset last _1 empty inward from the end edge of the selection (negative = outward)',
+        default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+        update=_par_prop_update,
+    )
+    par_inset: bpy.props.FloatProperty(
+        name='Inset',
+        description='Step back from each end of the face group before placing first/last beam',
+        default=0.0, min=0.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_offset_v: bpy.props.FloatProperty(
+        name='Vert Offset',
+        description='Vertical shift applied to all parallel beam empties',
+        default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+        update=_par_prop_update,
+    )
+    par_swap: bpy.props.BoolProperty(
+        name='Swap Source / Dest',
+        description='Swap which face group is treated as source (drives beam direction)',
+        default=False,
+    )
+
+    # ── Parallel beam profile ────────────────────────────────────────────────
+    par_depth: bpy.props.FloatProperty(
+        name='Depth (V)',
+        description='How far the parallel beam profile drops vertically',
+        default=0.25, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_thickness: bpy.props.FloatProperty(
+        name='Thickness (H)',
+        description='Horizontal width of the parallel beam profile',
+        default=0.15, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+
+    # ── Spoke beam profile ────────────────────────────────────────────────────
+    spk_depth: bpy.props.FloatProperty(
+        name='Depth (V)',
+        description='How far the spoke beam profile drops vertically',
+        default=0.25, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    spk_thickness: bpy.props.FloatProperty(
+        name='Thickness (H)',
+        description='Horizontal width of the spoke beam profile',
+        default=0.15, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+
+    # ── Spoke beam props ──────────────────────────────────────────────────────
+    spk_count: bpy.props.IntProperty(
+        name='Count',
+        description='Number of spoke beam pairs to place',
+        default=3, min=1, max=64,
+    )
+    spk_spacing: bpy.props.FloatProperty(
+        name='Spacing',
+        description='Place spokes at this arc-length interval instead of count (0 = use count)',
         default=0.0, min=0.0, max=100.0,
         unit='LENGTH', step=5, precision=3,
     )
-    beam_offset_h: bpy.props.FloatProperty(
-        name='Horiz Offset',
-        description='Horizontal offset of beam empties from the centroid line',
-        default=0.0, min=-10.0, max=10.0,
+    spk_inset: bpy.props.FloatProperty(
+        name='Inset',
+        description='Step back from each end of the hub face group before placing first/last spoke',
+        default=0.0, min=0.0, max=10.0,
         unit='LENGTH', step=1, precision=3,
     )
-    beam_offset_v: bpy.props.FloatProperty(
+    spk_offset_v: bpy.props.FloatProperty(
         name='Vert Offset',
-        description='Vertical offset of beam empties from the centroid',
+        description='Vertical shift applied to all spoke beam empties',
         default=0.0, min=-10.0, max=10.0,
         unit='LENGTH', step=1, precision=3,
     )
-    beam_snap_to_face: bpy.props.BoolProperty(
-        name='Snap to Face Centre',
-        description='Snap each beam empty to the nearest selected face centre after placement',
+    spk_length: bpy.props.FloatProperty(
+        name='Spoke Length',
+        description='Fixed spoke length (0 = use actual face-to-face distance)',
+        default=0.0, min=0.0, max=100.0,
+        unit='LENGTH', step=5, precision=3,
+    )
+    spk_both_ends: bpy.props.BoolProperty(
+        name='Grow From Both Ends',
+        description='When Spoke Length is set, place empties growing inward from both face groups toward each other',
         default=False,
+    )
+
+    # ── Curve beam props ──────────────────────────────────────────────────────
+    crv_count: bpy.props.IntProperty(
+        name='Count',
+        description='Number of curve beam segments (rings along the arc)',
+        default=3, min=1, max=64,
+    )
+    crv_inset_start: bpy.props.FloatProperty(
+        name='Inset Start',
+        description='Pull back the start end of the curve beam arc (0 = full selection)',
+        default=0.0, min=0.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    crv_inset_end: bpy.props.FloatProperty(
+        name='Inset End',
+        description='Pull back the end of the curve beam arc (0 = full selection)',
+        default=0.0, min=0.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    crv_offset_v: bpy.props.FloatProperty(
+        name='Vert Offset',
+        description='Vertical shift applied to all curve beam empties',
+        default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    crv_depth: bpy.props.FloatProperty(
+        name='Depth (V)',
+        description='How far the curve beam profile drops vertically',
+        default=0.25, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    crv_thickness: bpy.props.FloatProperty(
+        name='Thickness (H)',
+        description='How far the curve beam profile extends horizontally',
+        default=0.15, min=0.001, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+
+    beam_debug: bpy.props.BoolProperty(
+        name='Debug Placement',
+        description='Print group centre ordering to console and label empties with their sample index',
+        default=False,
+    )
+
+    show_trim_overlay: bpy.props.BoolProperty(
+        name='A/B Face Overlay',
+        description='Show the blue/yellow A/B face highlight overlay while selecting seam edges. Disable to see the raw selection clearly',
+        default=True,
     )

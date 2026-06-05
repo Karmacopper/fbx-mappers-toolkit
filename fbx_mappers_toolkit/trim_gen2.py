@@ -1101,42 +1101,6 @@ class OT_FBXMT_Generate_Trim2(Operator):
         except Exception:
             pass
 
-        # Auto-export OBJ if enabled in addon preferences
-        try:
-            import os
-            scene_props = context.scene.fbxmt_props
-            if scene_props.trim2_auto_export and last_obj:
-                from . import __version__
-                export_dir = scene_props.trim2_export_dir.strip()
-                if not export_dir:
-                    blend_path = bpy.data.filepath
-                    export_dir = os.path.dirname(blend_path) if blend_path else os.path.expanduser('~')
-                export_dir = bpy.path.abspath(export_dir)
-                os.makedirs(export_dir, exist_ok=True)
-                src_name = obj.name.replace(' ', '_')
-                base = os.path.join(export_dir, f'{src_name}_trim_{__version__}')
-                # Incremental counter — no overwrite
-                counter = 1
-                while True:
-                    path = f'{base}_{counter:03d}.obj'
-                    if not os.path.exists(path):
-                        break
-                    counter += 1
-                # Select only the trim object for export
-                bpy.ops.object.select_all(action='DESELECT')
-                last_obj.select_set(True)
-                context.view_layer.objects.active = last_obj
-                bpy.ops.wm.obj_export(
-                    filepath=path,
-                    export_selected_objects=True,
-                    export_uv=False,
-                    export_normals=False,
-                    export_materials=False,
-                )
-                self.report({'INFO'}, f'Trim2 exported: {os.path.basename(path)}')
-        except Exception as e:
-            self.report({'WARNING'}, f'Auto-export failed: {e}')
-
         self.report({'INFO'},
             f'Trim2 generated: {len(chains)} chain(s) -> "{last_obj.name}"')
         return {'FINISHED'}
