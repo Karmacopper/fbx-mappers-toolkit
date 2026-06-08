@@ -543,7 +543,12 @@ class FBXMT_PT_CeilingDeco(Panel):
         in_edit = context.mode == 'EDIT_MESH'
         in_obj  = context.mode == 'OBJECT'
 
-        # ── Shared profile (Coving + Parallel + Spoke) ────────────────────────
+        # ── Clear Empties ─────────────────────────────────────────────────────
+        row = layout.row()
+        row.enabled = in_obj
+        row.menu('FBXMT_MT_ClearEmpties', text='Clear Empties', icon='TRASH')
+
+        layout.separator()
         box = layout.box()
         box.label(text='Profile (Coving, Parallel & Spoke)', icon='EDGESEL')
         col = box.column(align=True)
@@ -572,14 +577,99 @@ class FBXMT_PT_CeilingDeco(Panel):
         # ── Quick Beam ────────────────────────────────────────────────────────
         box_qb = layout.box()
         box_qb.label(text='Quick Beam', icon='LIGHT_SUN')
+
+        # Detect whether a QuickBeam object is the active selection
+        active_obj    = context.active_object
+        is_quick_beam = (active_obj is not None
+                         and active_obj.type == 'MESH'
+                         and active_obj.get('fbxmt_qb_anchors') is not None)
+
+        if is_quick_beam:
+            # Live adjustment controls — gizmo arrows mirror these props
+            col_qb = box_qb.column(align=True)
+            col_qb.label(text='Use gizmos to adjust overrun', icon='INFO')
+            col_qb.prop(props, 'qb_offset_v', text='Vert Offset')
+            col_qb.separator()
+            row_ref = col_qb.row()
+            row_ref.scale_y = 1.3
+            row_ref.operator('fbxmt.quick_beam_refresh',
+                             text='Rebuild Beam', icon='FILE_REFRESH')
+            col_qb.separator()
+            col_qb.label(text='Or drag the blue/green gizmo', icon='GIZMO')
+            col_qb.label(text='arrows in the viewport.', icon='BLANK1')
+            col_qb.separator()
+
         col_qb = box_qb.column()
-        col_qb.label(text='Select 2 verts/edges/faces,', icon='INFO')
-        col_qb.label(text='then generate a beam between them.', icon='BLANK1')
+        if not is_quick_beam:
+            col_qb.label(text='Select 2 verts/edges/faces,', icon='INFO')
+            col_qb.label(text='then generate a beam between them.', icon='BLANK1')
         row_qb = box_qb.row()
         row_qb.scale_y = 1.4
         row_qb.enabled = in_edit
         row_qb.operator('fbxmt.quick_beam',
-                        text='Quick Beam', icon='LIGHT_SUN')
+                        text='New Quick Beam' if is_quick_beam else 'Quick Beam',
+                        icon='LIGHT_SUN')
+
+        layout.separator()
+
+        # ── Dihedral Beam ─────────────────────────────────────────────────────
+        box_dh = layout.box()
+        box_dh.label(text='Dihedral Beam', icon='MOD_EDGESPLIT')
+
+        # Detect any dh_NNN_1 anchor empties in the scene
+        is_dih_beam = any(
+            o.type == 'EMPTY'
+            and o.name.startswith('dh_')
+            and o.name.rsplit('_', 1)[-1] == '1'
+            for o in bpy.data.objects
+        )
+
+        # Props always visible — set before generation
+        col_dh = box_dh.column(align=True)
+        # Overrun adjusted via gizmos on generated beam
+        col_dh.label(text='Use gizmos to adjust overrun', icon='INFO')
+
+        if is_dih_beam:
+            col_dh.separator()
+            row_ref = col_dh.row()
+            row_ref.scale_y = 1.3
+            row_ref.operator('fbxmt.dihedral_beam_refresh',
+                             text='Rebuild Beam', icon='FILE_REFRESH')
+            col_dh.separator()
+            col_dh.label(text='Orange arrows = overrun,', icon='GIZMO')
+            col_dh.label(text='green arrow = bisector offset.', icon='BLANK1')
+
+        col_dh.separator()
+        col_dh2 = box_dh.column()
+        if not is_dih_beam:
+            col_dh2.label(text='Edge Select Mode: select 1 edge', icon='INFO')
+            col_dh2.label(text='with 2 adjacent faces.', icon='BLANK1')
+
+        row_place = box_dh.row()
+        row_place.scale_y = 1.4
+        row_place.enabled = in_edit
+        row_place.operator('fbxmt.place_dihedral',
+                           text='Place Dihedral', icon='MOD_EDGESPLIT')
+
+        try:
+            from .beam_placement import _next_index
+            n_dh = _next_index('dh') - 1
+            if n_dh > 0:
+                box_dh.label(text=f'{n_dh} anchor(s) in scene', icon='CHECKMARK')
+        except Exception:
+            pass
+
+        row_dh_prev = box_dh.row()
+        row_dh_prev.operator('fbxmt.preview_dihedral_ray',
+                             text='Preview Ray', icon='HIDE_OFF')
+
+        row2 = box_dh.row(align=True)
+        row2.enabled = in_obj
+        row2.operator('fbxmt.generate_dihedral',
+                      text='Generate Dihedral', icon='MESH_CUBE')
+        row2.alert = True
+        row2.operator('fbxmt.clear_dihedral', text='', icon='X')
+        row2.alert = False
 
         layout.separator()
 
@@ -644,32 +734,19 @@ class FBXMT_PT_CeilingDeco(Panel):
         sub.enabled = props.spk_length > 0.0
         sub.prop(props, 'spk_both_ends', text='Grow From Both Ends')
 
-        try:
-            n_spk = len(_get_empties_by_prefix('spk'))
-            if n_spk:
-                box_spk.label(text=f'{n_spk} pair(s) in scene', icon='CHECKMARK')
-        except Exception:
-            pass
-
         if not in_edit:
             c = box_spk.column()
             c.label(text='Enter Edit Mode, select', icon='INFO')
-            c.label(text='two face groups, then place.')
+            c.label(text='two face groups, then generate.', icon='BLANK1')
 
-        row = box_spk.row()
-        row.scale_y = 1.2
+        row = box_spk.row(align=True)
+        row.scale_y = 1.4
         row.enabled = in_edit
         row.operator('fbxmt.place_spokes',
-                     text='Place Spokes', icon='PIVOT_CURSOR')
-
-        row2 = box_spk.row(align=True)
-        row2.enabled = in_obj
-        row2.operator('fbxmt.generate_spokes',
-                      text='Generate Spokes', icon='MESH_CUBE')
-        row2.alert = True
-        row2.operator('fbxmt.clear_spokes',
-                      text='', icon='X')
-        row2.alert = False
+                     text='Generate Spokes', icon='PIVOT_CURSOR')
+        row.alert = True
+        row.operator('fbxmt.clear_spokes', text='', icon='X')
+        row.alert = False
 
         layout.separator()
 
@@ -678,44 +755,43 @@ class FBXMT_PT_CeilingDeco(Panel):
         box_crv.label(text='Curve Beams', icon='CURVE_PATH')
         col = box_crv.column(align=True)
         col.prop(props, 'crv_offset_v',    text='Vert Offset')
+        col.prop(props, 'crv_end_offset',  text='End Offset')
         col.prop(props, 'crv_inset_start', text='Inset Start')
         col.prop(props, 'crv_inset_end',   text='Inset End')
         col.separator()
         col.prop(props, 'crv_depth',       text='Depth (V)')
         col.prop(props, 'crv_thickness',   text='Thickness (H)')
 
-        try:
-            n_crv = len(_get_empties_by_prefix('crv'))
-            if n_crv:
-                box_crv.label(text=f'{n_crv} pair(s) in scene', icon='CHECKMARK')
-        except Exception:
-            pass
-
         if not in_edit:
             c = box_crv.column()
-            c.label(text='Enter Edit Mode, select', icon='INFO')
-            c.label(text='two face groups, then place.')
+            c.label(text='Select strip + strip or strip + face,', icon='INFO')
+            c.label(text='then Place. Inspect empties, then Generate.', icon='BLANK1')
 
-        layout.separator()
-        box_dbg = layout.box()
-        box_dbg.label(text='Debug', icon='CONSOLE')
-        box_dbg.prop(props, 'beam_debug', text='Debug Placement')
-        if props.beam_debug:
-            box_dbg.label(text='Console output + index', icon='INFO')
-            box_dbg.label(text='labels on empties when placed.', icon='BLANK1')
+        # Count existing crv empties
+        n_crv = sum(1 for o in bpy.data.objects
+                    if o.type == 'EMPTY' and o.name.startswith('crv_')
+                    and o.name.rsplit('_', 1)[-1] == '1')
+        if n_crv:
+            box_crv.label(text=f'{n_crv} crv empty/empties in scene', icon='CHECKMARK')
 
-        row = box_crv.row()
-        row.scale_y = 1.2
-        row.enabled = in_edit
-        row.operator('fbxmt.place_curve',
-                     text='Place Curve', icon='CURVE_PATH')
+        row_place = box_crv.row()
+        row_place.scale_y = 1.4
+        row_place.enabled = in_edit
+        row_place.operator('fbxmt.place_curve',
+                           text='Place Curve', icon='CURVE_PATH')
 
         row2 = box_crv.row(align=True)
         row2.enabled = in_obj
         row2.operator('fbxmt.generate_curve',
                       text='Generate Curve', icon='MESH_CUBE')
         row2.alert = True
-        row2.operator('fbxmt.clear_curve',
-                      text='', icon='X')
+        row2.operator('fbxmt.clear_curve', text='', icon='X')
         row2.alert = False
+
+        layout.separator()
+        box_dbg = layout.box()
+        box_dbg.label(text='Debug', icon='CONSOLE')
+        box_dbg.prop(props, 'beam_debug', text='Debug Mode')
+        if props.beam_debug:
+            box_dbg.label(text='Full console output on generate.', icon='INFO')
 

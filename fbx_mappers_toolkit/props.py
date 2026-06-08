@@ -558,6 +558,88 @@ class FBXMT_Props(PropertyGroup):
         step=1, precision=3,
     )
 
+    # ── Quick Beam gizmo props ────────────────────────────────────────────────
+    qb_overrun_start: bpy.props.FloatProperty(
+        name='Overrun Start',
+        description='How far the beam extends past the start element',
+        default=0.25, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    qb_overrun_end: bpy.props.FloatProperty(
+        name='Overrun End',
+        description='How far the beam extends past the end element',
+        default=0.25, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    qb_overrun: bpy.props.FloatProperty(
+        name='Overrun',
+        description='Legacy — use gizmos to adjust each end independently',
+        default=0.25, min=0.0, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    qb_offset_v: bpy.props.FloatProperty(
+        name='Vertical Offset',
+        description='Shift the Quick Beam profile up (+) or down (-) relative to its axis',
+        default=0.0, min=-2.0, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+
+    # ── Parallel Beam gizmo props ────────────────────────────────────────────
+    par_overrun_start: bpy.props.FloatProperty(
+        name='Overrun Start', default=0.25, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_overrun_end: bpy.props.FloatProperty(
+        name='Overrun End', default=0.25, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_offset_v: bpy.props.FloatProperty(
+        name='Vertical Offset', default=0.0, min=-5.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_offset_lat: bpy.props.FloatProperty(
+        name='Lateral Offset', default=0.0, min=-5.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_inset_start: bpy.props.FloatProperty(
+        name='Inset Start',
+        description='How far the start end penetrates into the wall for boolean clearance',
+        default=0.25, min=0.0, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_inset_end: bpy.props.FloatProperty(
+        name='Inset End',
+        description='How far the end penetrates into the wall for boolean clearance',
+        default=0.25, min=0.0, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+
+    # ── Dihedral Beam props ──────────────────────────────────────────────────
+    dh_overrun_start: bpy.props.FloatProperty(
+        name='Overrun Start',
+        description='How far the beam extends past the start end of the edge',
+        default=0.25, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    dh_overrun_end: bpy.props.FloatProperty(
+        name='Overrun End',
+        description='How far the beam extends past the far end of the edge',
+        default=0.25, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    dh_overrun: bpy.props.FloatProperty(
+        name='Overrun',
+        description='Legacy — use gizmos to adjust each end independently',
+        default=0.25, min=0.0, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    dh_offset: bpy.props.FloatProperty(
+        name='Offset',
+        description='Slide the beam along the dihedral bisector — positive pushes away from the edge',
+        default=0.0, min=-2.0, max=2.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+
     # ── Legacy beam props (kept registered, not drawn) ──────────────────────
     beam_count: bpy.props.IntProperty(
         name='Count', description='Legacy — superseded', default=1, min=1, max=64)
@@ -706,6 +788,16 @@ class FBXMT_Props(PropertyGroup):
         name='Vert Offset',
         description='Vertical shift applied to all curve beam empties',
         default=0.0, min=-10.0, max=10.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    crv_end_offset: bpy.props.FloatProperty(
+        name='End Offset',
+        description=(
+            'Slide the end empties along the arm axis. '
+            'Negative = closer to parent wall (smaller loop), '
+            'Positive = further away (larger loop)'
+        ),
+        default=0.0, min=-5.0, max=5.0,
         unit='LENGTH', step=1, precision=3,
     )
     crv_depth: bpy.props.FloatProperty(

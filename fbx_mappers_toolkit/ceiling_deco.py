@@ -1,8 +1,6 @@
-# ceiling_deco.py — FBX Mapper's Toolkit  [v0.25.1]
+# ceiling_deco.py — FBX Mapper's Toolkit  [v0.26.0]
 import sys as _sys
-print("FBXMT ceiling_deco v0.25.1 loaded", file=_sys.stderr)
 del _sys
-
 
 #
 # Ceiling Deco System: Generate Coving + Generate Beams.
@@ -62,11 +60,9 @@ from bpy.types import Operator
 
 from .materials import ensure_fbxmt_materials, COLLECTION_TRIM, move_to_collection
 
-
 # ---------------------------------------------------------------------------
 # Noise compensation threshold for Z coplanarity check (metres)
 Z_NOISE_EPS = 1e-3
-
 
 # ---------------------------------------------------------------------------
 # Helpers (verbatim from trim_gen2 — no import to keep files decoupled)
@@ -94,7 +90,6 @@ def _topo_arm(face, edge, T):
     d  = fc - ec
     d  = d - T * T.dot(d)
     return d.normalized() if d.length > 1e-6 else _fallback()
-
 
 def _sanitise_t_junctions(bm, edges, face_normals_map, snap=1e-3):
     """
@@ -156,7 +151,6 @@ def _sanitise_t_junctions(bm, edges, face_normals_map, snap=1e-3):
                 break
     return [e for e in bm.edges if e.is_valid], face_normals_map, split_host_map
 
-
 def _plane_intersect(origin, dir_in, dir_out, dist):
     """Miter intersection of two planar offsets.
 
@@ -188,7 +182,6 @@ def _plane_intersect(origin, dir_in, dir_out, dist):
     if bisector.length > 1e-6:
         return origin + bisector.normalized() * dist
     return origin + dir_in * dist
-
 
 # ---------------------------------------------------------------------------
 # Chain utilities (verbatim from trim_gen2)
@@ -260,7 +253,6 @@ def _chain_edges(selected_edges):
 
     return chains, closed_fl
 
-
 def _chain_verts(chain, is_closed):
     """Return ordered list of BMVerts for a chain. Holds vert refs for stable id()."""
     # Pre-fetch all vert pairs to avoid re-wrapping id() instability
@@ -281,7 +273,6 @@ def _chain_verts(chain, is_closed):
         verts.pop()
 
     return verts
-
 
 # ---------------------------------------------------------------------------
 # Per-edge arm extraction for coving
@@ -375,7 +366,6 @@ def _edge_arms(edge, T, normal_mat, seam_centroid_local=None, face_normals=None)
 
     return h_arm, wd
 
-
 # ---------------------------------------------------------------------------
 # Coving profile ring — 4 verts
 
@@ -433,7 +423,6 @@ def _coving_ring(seam_co, seam_z,
     v3 = v3_raw.copy()
 
     return v0, v1, v2, v3
-
 
 # ---------------------------------------------------------------------------
 # Build coving mesh from one chain
@@ -521,8 +510,6 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
         else:
             wall_down = local_down
 
-
-
         edge_h_arms.append(h_arm)
         edge_wall_downs.append(wall_down)
 
@@ -607,14 +594,12 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
                 if ratio > 3.0 and len_in < len_out:
                     junction_verts.append(vi)
 
-
     # ── Snap v1/v3 at antiparallel junctions ─────────────────────────────────
     # At junctions where the chain folds back (bay→straight), the antiparallel
     # arm condition fires and each side computes its own flush v1. These differ
     # slightly, leaving a crack in the ceiling strip. Snap both to the midpoint
     # of the outgoing arm's v1 — this is the correct shared miter point and
     # eliminates the crack without changing the geometry elsewhere.
-
 
     # ── Junction ceiling-line intersection post-pass ──────────────────────────
     # Collect junction verts during the main loop (arm_len > 1.1*thickness),
@@ -729,8 +714,6 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
 
     cov_bm.normal_update()
 
-
-
 # ---------------------------------------------------------------------------
 # Z coplanarity check
 
@@ -753,37 +736,34 @@ def _chain_z_ok(chain, is_closed, eps=Z_NOISE_EPS, normal_mat=None, matrix_world
     max_dev = max((abs(_world_z(v) - z_ref) for v in verts[1:]), default=0.0)
     return max_dev <= eps, z_ref, max_dev
 
-
 # ---------------------------------------------------------------------------
 # Beam profile sweep (same cross-section as coving)
 
-def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
-                mat_index=0):
-    """Sweep coving profile from start_co to end_co, flush end caps."""
+def _build_beam_oriented(beam_bm, start_co, end_co,
+                          h_arm, wall_down,
+                          depth, thickness, notch_h, notch_v,
+                          mat_index=0):
+    """Sweep the C-profile from start_co to end_co using explicit profile axes.
+
+    h_arm     — unit vector spanning the width arm of the profile
+    wall_down — unit vector spanning the depth arm (points INTO the surface)
+
+    Both must be perpendicular to the beam axis (start→end) and to each other.
+    The profile bounding-box midpoint is centred on each ring position.
+    """
     axis = Vector(end_co) - Vector(start_co)
     if axis.length < 1e-4:
         return
 
-    t_dir = axis.normalized()
-    world_up = Vector((0, 0, 1))
+    h_arm     = Vector(h_arm).normalized()
+    wall_down = Vector(wall_down).normalized()
 
-    # Horizontal arm — perp to t_dir in XY
-    h_arm = t_dir.cross(world_up)
-    if h_arm.length < 1e-6:
-        h_arm = t_dir.cross(Vector((0, 1, 0)))
-    h_arm = h_arm.normalized()
-
-    # Wall-down — straight down for a horizontal beam
-    wall_down = -world_up
-
-    # Centre offset — shifts the profile so its bounding box midpoint sits on
-    # the empty location rather than v0 being at the empty location.
     centre_offset = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
 
     def _ring(co):
-        A = Vector(co) - centre_offset
+        A  = Vector(co) - centre_offset
         v0 = A.copy()
-        v1 = Vector((A.x + h_arm.x * thickness, A.y + h_arm.y * thickness, A.z))
+        v1 = A + h_arm * thickness
         v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
         v3 = A + wall_down * depth
         return v0, v1, v2, v3
@@ -813,7 +793,30 @@ def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
 
     beam_bm.normal_update()
 
+def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
+                mat_index=0):
+    """Sweep coving profile from start_co to end_co using world-up orientation.
 
+    This is the standard beam builder for horizontal coving and parallel/spoke
+    beams.  h_arm is derived from t_dir × world_up; wall_down is -Z.
+
+    For arbitrary orientations (e.g. dihedral beams) use _build_beam_oriented.
+    """
+    axis = Vector(end_co) - Vector(start_co)
+    if axis.length < 1e-4:
+        return
+
+    t_dir    = axis.normalized()
+    world_up = Vector((0, 0, 1))
+
+    h_arm = t_dir.cross(world_up)
+    if h_arm.length < 1e-6:
+        h_arm = t_dir.cross(Vector((0, 1, 0)))
+
+    _build_beam_oriented(beam_bm, start_co, end_co,
+                         h_arm, -world_up,
+                         depth, thickness, notch_h, notch_v,
+                         mat_index=mat_index)
 
 def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
     """Sweep the beam profile along an ordered list of ring positions with
@@ -848,18 +851,36 @@ def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
             t = Vector((0, 1, 0))
         return t.normalized()
 
-    def _profile(co, tangent):
-        """Build 4-vert profile at co oriented to tangent."""
+    def _miter_scale(i):
+        """Scale factor for profile width at ring i to compensate dihedral angle.
+        At a corner, the bisected tangent cuts the profile at an angle — the
+        profile must be widened by 1/cos(half_angle) so strip faces close cleanly.
+        """
+        n = len(ring_positions)
+        if i == 0 or i == n - 1:
+            return 1.0
+        t_in  = (ring_positions[i]     - ring_positions[i - 1]).normalized()
+        t_out = (ring_positions[i + 1] - ring_positions[i]).normalized()
+        cos_a = max(-1.0, min(1.0, t_in.dot(t_out)))  # dot of unit vectors = cos(angle)
+        half  = (1.0 + cos_a) * 0.5                   # cos²(half_angle)
+        if half < 1e-6:
+            return 1.0
+        import math as _math
+        return 1.0 / _math.sqrt(half)                 # 1/cos(half_angle)
+
+    def _profile(co, tangent, scale=1.0):
+        """Build 4-vert profile at co oriented to tangent, with optional width scale."""
         h_arm = tangent.cross(world_up)
         if h_arm.length < 1e-6:
             h_arm = tangent.cross(Vector((0, 1, 0)))
         h_arm      = h_arm.normalized()
         wall_down  = -world_up
-        centre_off = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
+        t_thick    = thickness * scale
+        centre_off = h_arm * (t_thick * 0.5) + wall_down * (depth * 0.5)
         A  = Vector(co) - centre_off
         v0 = A.copy()
-        v1 = A + h_arm * thickness
-        v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
+        v1 = A + h_arm * t_thick
+        v2 = v1 + h_arm * ((2*notch_h - 1) * t_thick) + wall_down * (2*notch_v * depth)
         v3 = A + wall_down * depth
         return v0, v1, v2, v3
 
@@ -870,11 +891,12 @@ def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
         except Exception:
             pass
 
-    # Build all profile rings
+    # Build all profile rings with dihedral miter compensation
     rings = []
     for i, pos in enumerate(ring_positions):
-        t    = _tangent(i)
-        verts = [bm.verts.new(p) for p in _profile(pos, t)]
+        t     = _tangent(i)
+        scale = _miter_scale(i)
+        verts = [bm.verts.new(p) for p in _profile(pos, t, scale)]
         rings.append(verts)
 
     # Stitch strip faces between adjacent rings
@@ -896,6 +918,72 @@ def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
     _face([v0e, v2e, v3e])
 
     bm.normal_update()
+
+def _build_curve_beam_directed(bm, ring_positions, wall_downs,
+                                depth, thickness, mat_index=0):
+    """Like _build_curve_beam but with a per-ring wall_down direction.
+
+    wall_downs: list of unit Vectors, one per ring_position.
+    Used for RADIUS mode where wall_down points from each ring toward the
+    radius target face rather than always pointing -Z.
+    """
+    if len(ring_positions) < 2 or len(wall_downs) < len(ring_positions):
+        return
+
+    notch_h = 0.5
+    notch_v = 0.5
+
+    def _tangent(i):
+        n = len(ring_positions)
+        if i == 0:
+            t = ring_positions[1] - ring_positions[0]
+        elif i == n - 1:
+            t = ring_positions[-1] - ring_positions[-2]
+        else:
+            t_in  = (ring_positions[i]     - ring_positions[i - 1]).normalized()
+            t_out = (ring_positions[i + 1] - ring_positions[i]).normalized()
+            t     = t_in + t_out
+        return t.normalized() if t.length > 1e-6 else Vector((0, 1, 0))
+
+    def _profile(co, tangent, wall_down):
+        h_arm = tangent.cross(wall_down)
+        if h_arm.length < 1e-6:
+            h_arm = tangent.cross(Vector((0, 1, 0)))
+        h_arm      = h_arm.normalized()
+        centre_off = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
+        A  = Vector(co) - centre_off
+        v0 = A.copy()
+        v1 = A + h_arm * thickness
+        v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
+        v3 = A + wall_down * depth
+        return v0, v1, v2, v3
+
+    def _face(vlist):
+        try:
+            f = bm.faces.new(vlist)
+            f.material_index = mat_index
+        except Exception:
+            pass
+
+    rings = []
+    for i, pos in enumerate(ring_positions):
+        t    = _tangent(i)
+        wd   = Vector(wall_downs[i]).normalized()
+        verts = [bm.verts.new(p) for p in _profile(pos, t, wd)]
+        rings.append(verts)
+
+    STRIPS = [(0, 1), (1, 2), (2, 3), (3, 0)]
+    for ri in range(len(rings) - 1):
+        rs = rings[ri]; re = rings[ri + 1]
+        for a, b in STRIPS:
+            _face([rs[a], rs[b], re[b], re[a]])
+
+    v0s, v1s, v2s, v3s = rings[0]
+    _face([v2s, v1s, v0s]); _face([v3s, v2s, v0s])
+    v0e, v1e, v2e, v3e = rings[-1]
+    _face([v0e, v1e, v2e]); _face([v0e, v2e, v3e])
+    bm.normal_update()
+
 
 # ---------------------------------------------------------------------------
 # Beam empty discovery (used by both Generate Beams and beam_placement.py)
@@ -919,11 +1007,9 @@ def _get_empties_by_prefix(prefix):
             pairs.append((g[1], g[2]))
     return pairs
 
-
 def _get_beam_empties(context):
     """Legacy helper — returns beam_NNN pairs. Used by old beam_placement refs."""
     return _get_empties_by_prefix('beam')
-
 
 # ---------------------------------------------------------------------------
 # Operator 1: Generate Coving
@@ -1087,8 +1173,6 @@ class OT_FBXMT_Generate_Coving(Operator):
                 self.report({'ERROR'}, 'M_FBXMT_Trim not found — run Setup Scene first')
                 return {'CANCELLED'}
 
-
-
             chains, closed_flags = _chain_edges(selected_edges)
 
             # If the result isn't all closed chains, attempt T-junction
@@ -1203,7 +1287,6 @@ _PARALLEL_THRESHOLD = 0.1   # abs(dot) below this = edge-on / pass-through face
 _RAY_MAX_DIST       = 100.0
 _RAY_OFFSET         = 0.001 # nudge past current hit to continue casting
 
-
 def _smart_raycast(obj, ray_origin, ray_dir, depsgraph):
     """Cast ray along ray_dir, passing through edge-on faces.
 
@@ -1221,7 +1304,7 @@ def _smart_raycast(obj, ray_origin, ray_dir, depsgraph):
 
     # Nudge origin slightly along ray direction so we don't immediately
     # hit the face the empty is sitting on
-    origin    = Vector(ray_origin) + Vector(ray_dir).normalized() * 0.02
+    origin    = Vector(ray_origin) + Vector(ray_dir).normalized() * 0.05
     direction = Vector(ray_dir).normalized()
 
     max_iter = 32   # guard against infinite loops in degenerate geometry
@@ -1250,7 +1333,6 @@ def _smart_raycast(obj, ray_origin, ray_dir, depsgraph):
         origin = world_loc + direction * _RAY_OFFSET
 
     return None   # ran out of iterations
-
 
 # ---------------------------------------------------------------------------
 # Shared generate helper
@@ -1281,25 +1363,33 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
 
     generated    = []
     vert_markers = []
-    pullback     = 0.25    # extend each end outward into coving mesh for boolean cut
-
     for start_empty, end_empty in pairs:
         start_co = Vector(start_empty.matrix_world.translation)
         end_co   = Vector(end_empty.matrix_world.translation)
 
-        # ── Extend both ends outward into coving mesh for boolean cut ─────
+        # ── Extend both ends into wall for boolean cut (inset) ────────────
+        inset_s    = getattr(props, 'par_inset_start', 0.25)
+        inset_e    = getattr(props, 'par_inset_end',   0.25)
         axis       = end_co - start_co
         length     = axis.length
         group_name = start_empty.name.rsplit('_', 1)[0]
         if length > 1e-4:
             t_dir    = axis / length
-            start_co = start_co - t_dir * pullback
-            end_co   = end_co   + t_dir * pullback
+            start_co = start_co - t_dir * inset_s
+            end_co   = end_co   + t_dir * inset_e
 
         # ── Build beam mesh ───────────────────────────────────────────────
         beam_bm = bmesh.new()
         _build_beam(beam_bm, start_co, end_co,
                     depth, thickness, 0.5, 0.5, mat_index=0)
+
+        # Verify mesh after build
+        beam_bm.verts.ensure_lookup_table()
+        beam_bm.faces.ensure_lookup_table()
+        if beam_bm.verts:
+            xs = [v.co.x for v in beam_bm.verts]
+            ys = [v.co.y for v in beam_bm.verts]
+            zs = [v.co.z for v in beam_bm.verts]
 
         if merge_verts:
             bmesh.ops.remove_doubles(beam_bm,
@@ -1313,7 +1403,6 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
 
         beam_obj = bpy.data.objects.new(f'{group_name}_Beam', beam_mesh)
         context.collection.objects.link(beam_obj)
-        move_to_collection(beam_obj, COLLECTION_TRIM)
         generated.append(beam_obj)
 
         # ── Boolean Difference using source mesh stored on empty ──────────
@@ -1323,20 +1412,29 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
         source_obj = bpy.data.objects.get(source_name) if source_name else None
 
         if source_obj and source_obj.type == 'MESH':
-            mod = beam_obj.modifiers.new(name='FBXMT_BoolTrim', type='BOOLEAN')
+            mod           = beam_obj.modifiers.new(name='FBXMT_BoolTrim_Source', type='BOOLEAN')
             mod.operation = 'DIFFERENCE'
             mod.object    = source_obj
             mod.solver    = 'FLOAT'
 
-            bpy.ops.object.select_all(action='DESELECT')
-            beam_obj.select_set(True)
-            context.view_layer.objects.active = beam_obj
-            try:
-                bpy.ops.object.modifier_apply(modifier='FBXMT_BoolTrim')
-            except Exception as e:
-                import sys as _sys
-                print(f'FBXMT: Boolean apply failed for {group_name}: {e}',
-                      file=_sys.stderr)
+        # ── Store anchor data for gizmo system ────────────────────────────
+        raw_start = Vector(start_empty.matrix_world.translation)
+        raw_end   = Vector(end_empty.matrix_world.translation)
+        raw_axis  = raw_end - raw_start
+        if raw_axis.length > 1e-6:
+            t_dir   = raw_axis.normalized()
+            # Lateral direction: perp to t_dir in XY
+            lat_dir = Vector((-t_dir.y, t_dir.x, 0.0)).normalized()
+        else:
+            t_dir   = Vector((1, 0, 0))
+            lat_dir = Vector((0, 1, 0))
+        beam_obj['fbxmt_par_start']   = list(raw_start)
+        beam_obj['fbxmt_par_end']     = list(raw_end)
+        beam_obj['fbxmt_par_source']  = source_name
+        beam_obj['fbxmt_par_t_dir']   = list(t_dir)
+        beam_obj['fbxmt_par_lat_dir']  = list(lat_dir)
+        beam_obj['fbxmt_par_inset_s']  = float(inset_s)
+        beam_obj['fbxmt_par_inset_e']  = float(inset_e)
 
         # ── Vert markers at original empty positions ──────────────────────
         for empty in (start_empty, end_empty):
@@ -1378,6 +1476,10 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
     else:
         export_msg = 'set export folder in Project Setup to auto-export'
 
+    # ── Move beams to Trim collection (after export so select_set works) ──
+    for beam_obj in generated:
+        move_to_collection(beam_obj, COLLECTION_TRIM)
+
     # ── Remove vert markers and source empties ───────────────────────────
     for marker_obj in vert_markers:
         bpy.data.objects.remove(marker_obj, do_unlink=True)
@@ -1391,7 +1493,6 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
 
     bpy.ops.object.select_all(action='DESELECT')
     return generated, export_msg
-
 
 # ---------------------------------------------------------------------------
 # Operator: Generate Parallel Beams
@@ -1439,7 +1540,8 @@ class OT_FBXMT_Generate_Parallel(Operator):
         pullback    = 0.25
         skipped     = 0
 
-        for anchor in anchors:
+        n_anchors = len(anchors)
+        for anchor_idx, anchor in enumerate(anchors):
             # Read stored normal
             raw_normal = anchor.get('fbxmt_normal', None)
             if raw_normal is None:
@@ -1495,8 +1597,16 @@ class OT_FBXMT_Generate_Parallel(Operator):
 
             beam_obj = bpy.data.objects.new(f'{group_name}_Beam', beam_mesh)
             context.collection.objects.link(beam_obj)
-            move_to_collection(beam_obj, COLLECTION_TRIM)
+            # Stay in context.collection — gizmos need the beam accessible
             generated.append(beam_obj)
+
+            # Store gizmo anchor data on beam object
+            lat_dir = Vector((-t_dir.y, t_dir.x, 0.0)).normalized()
+            beam_obj['fbxmt_par_start']   = list(ray_origin)
+            beam_obj['fbxmt_par_end']     = list(hit_loc)
+            beam_obj['fbxmt_par_source']  = source_name
+            beam_obj['fbxmt_par_t_dir']   = list(t_dir)
+            beam_obj['fbxmt_par_lat_dir'] = list(lat_dir)
 
             # Vert markers
             for pos in (ray_origin, hit_loc):
@@ -1521,13 +1631,101 @@ class OT_FBXMT_Generate_Parallel(Operator):
             mod.solver    = 'FLOAT'
             # Modifier left in stack for fine-tuning after generation
 
+            # Store chain data on beam for gizmo regeneration
+            import json as _json2
+            chain_json = anchor.get('fbxmt_chain', '[]')
+            try:
+                chain_verts = [Vector(v) for v in _json2.loads(chain_json)]
+            except Exception:
+                chain_verts = []
+            if len(chain_verts) >= 2:
+                span_start = chain_verts[0]
+                span_end   = chain_verts[-1]
+                span_dir   = (span_end - span_start)
+                total_len  = sum((chain_verts[i+1] - chain_verts[i]).length
+                                 for i in range(len(chain_verts)-1))
+                beam_obj['fbxmt_par_group_idx']   = anchor_idx
+                beam_obj['fbxmt_par_group_count'] = n_anchors
+                beam_obj['fbxmt_par_span_start'] = list(span_start)
+                beam_obj['fbxmt_par_span_end']   = list(span_end)
+                beam_obj['fbxmt_par_span_dir']   = list(span_dir.normalized()
+                                                        if span_dir.length > 1e-6
+                                                        else Vector((1,0,0)))
+                beam_obj['fbxmt_par_span_len']   = total_len
+                beam_obj['fbxmt_par_chain']      = chain_json
+                beam_obj['fbxmt_par_faces']      = anchor.get('fbxmt_face_centres', '[]')
+                beam_obj['fbxmt_par_normals']    = anchor.get('fbxmt_face_normals', '[]')
+                beam_obj['fbxmt_par_group_idx']   = anchor_idx
+                beam_obj['fbxmt_par_group_count'] = n_anchors
+
             # Remove anchor empty
             try:
                 bpy.data.objects.remove(anchor, do_unlink=True)
             except Exception:
                 pass
 
-        # OBJ export
+
+        # ── Create group empty at face midpoint ──────────────────────────
+        if generated:
+            # Unique index for group empty
+            existing = {o.name for o in bpy.data.objects if o.name.startswith('par_grp_')}
+            grp_idx  = 1
+            while f'par_grp_{grp_idx:03d}' in existing:
+                grp_idx += 1
+            grp_name  = f'par_grp_{grp_idx:03d}'
+            grp_empty = bpy.data.objects.new(grp_name, None)
+            grp_empty.empty_display_type = 'PLAIN_AXES'
+            grp_empty.empty_display_size = 0.1
+            context.collection.objects.link(grp_empty)
+
+            # Position at midpoint of first and last beam origins
+            all_starts = [Vector(o['fbxmt_par_start']) for o in generated if o.get('fbxmt_par_start')]
+            all_ends   = [Vector(o['fbxmt_par_end'])   for o in generated if o.get('fbxmt_par_end')]
+            face_mid   = (all_starts[0] + all_ends[-1]) * 0.5 if (all_starts and all_ends) else Vector((0,0,0))
+            grp_empty.location = face_mid
+
+            # Store group data on empty for gizmo system
+            first_beam = generated[0]
+            # Store raw beam anchor positions for regeneration
+            import json as _json3
+            anchor_positions = []
+            for beam in generated:
+                raw = beam.get('fbxmt_par_start')
+                if raw:
+                    anchor_positions.append(list(raw))
+            grp_empty['fbxmt_par_anchors'] = _json3.dumps(anchor_positions)
+            grp_empty['fbxmt_par_group']      = True
+            grp_empty['fbxmt_par_chain']      = first_beam.get('fbxmt_par_chain',    '[]')
+            grp_empty['fbxmt_par_source']     = first_beam.get('fbxmt_par_source',   '')
+            grp_empty['fbxmt_par_span_start'] = first_beam.get('fbxmt_par_span_start', list(face_mid))
+            grp_empty['fbxmt_par_span_end']   = first_beam.get('fbxmt_par_span_end',   list(face_mid))
+            grp_empty['fbxmt_par_span_dir']   = first_beam.get('fbxmt_par_span_dir',   [1,0,0])
+            grp_empty['fbxmt_par_span_len']   = first_beam.get('fbxmt_par_span_len',   0.0)
+            grp_empty['fbxmt_par_t_dir']      = first_beam.get('fbxmt_par_t_dir',      [1,0,0])
+            grp_empty['fbxmt_par_lat_dir']    = first_beam.get('fbxmt_par_lat_dir',    [0,1,0])
+
+            # Parent beams to group empty, preserving world position
+            # Force depsgraph update so matrix_world reflects the new location
+            context.view_layer.update()
+            for beam in generated:
+                # Store world matrix before parenting
+                world_mat = beam.matrix_world.copy()
+                beam.parent = grp_empty
+                # Restore world position by computing correct parent inverse
+                beam.matrix_parent_inverse = grp_empty.matrix_world.inverted()
+                beam.matrix_world = world_mat
+                beam['fbxmt_par_group_empty'] = grp_name
+
+            # Select group empty so gizmos activate
+            bpy.ops.object.select_all(action='DESELECT')
+            grp_empty.select_set(True)
+            context.view_layer.objects.active = grp_empty
+
+            bpy.ops.object.select_all(action='DESELECT')
+            grp_empty.select_set(True)
+            context.view_layer.objects.active = grp_empty
+
+
         export_folder = props.export_path.strip() if props.export_path else ''
         if export_folder and os.path.isdir(export_folder):
             counter = 1
@@ -1563,7 +1761,6 @@ class OT_FBXMT_Generate_Parallel(Operator):
         msg += f' — {export_msg}'
         self.report({'INFO'}, msg)
         return {'FINISHED'}
-
 
 # ---------------------------------------------------------------------------
 # Operator: Generate Spoke Beams
@@ -1602,7 +1799,6 @@ class OT_FBXMT_Generate_Spokes(Operator):
                     f'{len(generated)} spoke beam(s) generated — {export_msg}')
         return {'FINISHED'}
 
-
 # ---------------------------------------------------------------------------
 # Operator: Generate Curve Beams
 
@@ -1624,10 +1820,26 @@ class OT_FBXMT_Generate_Curve(Operator):
         from mathutils import Vector
         props = context.scene.fbxmt_props
 
+        # Support two empty layouts from Place Curve:
+        #   NEW: crv_NNN_1 only — each empty IS a ring position
+        #   OLD: crv_NNN_1/2 pairs — take _1 of each pair + final _2
+        # Only use empties whose matrix_world has been evaluated (non-zero location)
+        solo_empties = sorted(
+            [o for o in bpy.data.objects
+             if o.type == 'EMPTY'
+             and o.name.startswith('crv_')
+             and o.name.rsplit('_', 1)[-1] == '1'
+             and o.matrix_world.translation.length > 1e-4],
+            key=lambda o: o.name,
+        )
+        import sys as _sys
+        for e in solo_empties:
+            loc = e.matrix_world.translation
         pairs = _get_empties_by_prefix('crv')
-        if not pairs:
+
+        if not solo_empties and not pairs:
             self.report({'WARNING'},
-                'No crv_NNN_1/2 empties found — use Place Curve Beams first.')
+                'No crv_NNN_1 empties found — use Place Curve first.')
             return {'CANCELLED'}
 
         ensure_fbxmt_materials()
@@ -1636,14 +1848,24 @@ class OT_FBXMT_Generate_Curve(Operator):
             self.report({'ERROR'}, 'M_FBXMT_Trim not found — run Setup Scene first')
             return {'CANCELLED'}
 
-        # Collect ordered ring positions from paired empties.
-        # Each pair is (ring_i, ring_i+1) — take _1 from every pair plus the
-        # final _2 to reconstruct the full ring sequence without duplicates.
+        # Build ring positions
         ring_positions = []
-        for i, (e1, e2) in enumerate(pairs):
-            ring_positions.append(Vector(e1.matrix_world.translation))
-            if i == len(pairs) - 1:
-                ring_positions.append(Vector(e2.matrix_world.translation))
+        source_name    = ''
+        if pairs:
+            # Old paired layout
+            for i, (e1, e2) in enumerate(pairs):
+                ring_positions.append(Vector(e1.matrix_world.translation))
+                if i == len(pairs) - 1:
+                    ring_positions.append(Vector(e2.matrix_world.translation))
+            source_name = pairs[0][0].get('fbxmt_source', '')
+        else:
+            # New solo layout — each _1 empty is a ring position
+            for e in solo_empties:
+                ring_positions.append(Vector(e.matrix_world.translation))
+            source_name = solo_empties[0].get('fbxmt_source', '') if solo_empties else ''
+        
+        empties_to_remove = ([e for p in pairs for e in p]
+                              if pairs else solo_empties)
 
         depth     = props.crv_depth
         thickness = props.crv_thickness
@@ -1670,9 +1892,8 @@ class OT_FBXMT_Generate_Curve(Operator):
         context.collection.objects.link(curve_obj)
         move_to_collection(curve_obj, COLLECTION_TRIM)
 
-        # Boolean trim using source from first empty
-        source_name = pairs[0][0].get('fbxmt_source', '') or                       pairs[0][1].get('fbxmt_source', '')
-        source_obj  = bpy.data.objects.get(source_name) if source_name else None
+        # Boolean trim
+        source_obj = bpy.data.objects.get(source_name) if source_name else None
 
         if source_obj and source_obj.type == 'MESH':
             mod = curve_obj.modifiers.new(name='FBXMT_BoolTrim', type='BOOLEAN')
@@ -1682,12 +1903,11 @@ class OT_FBXMT_Generate_Curve(Operator):
             # Modifier left in stack for fine-tuning after generation
 
         # Remove empties
-        for e1, e2 in pairs:
-            for e in (e1, e2):
-                try:
-                    bpy.data.objects.remove(e, do_unlink=True)
-                except Exception:
-                    pass
+        for e in empties_to_remove:
+            try:
+                bpy.data.objects.remove(e, do_unlink=True)
+            except Exception:
+                pass
 
         # Vert markers for OBJ export
         vert_markers = []
@@ -1734,7 +1954,6 @@ class OT_FBXMT_Generate_Curve(Operator):
         self.report({'INFO'}, f'Curve beam generated — {export_msg}')
         return {'FINISHED'}
 
-
 # ---------------------------------------------------------------------------
 # Legacy Generate Beams (beam_NNN prefix) — kept for backwards compat
 
@@ -1764,7 +1983,6 @@ class OT_FBXMT_Generate_Beams(Operator):
         self.report({'INFO'},
                     f'{len(generated)} legacy beam(s) generated — {export_msg}')
         return {'FINISHED'}
-
 
 # ---------------------------------------------------------------------------
 # Registration

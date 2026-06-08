@@ -1,18 +1,21 @@
-# par_ray_preview.py — FBX Mapper's Toolkit  [v0.25.1]
+# par_ray_preview.py — FBX Mapper's Toolkit  [v0.26.6]
 #
-# Viewport overlay that draws parallel beam ray previews.
+# Viewport overlay drawing ray-cast previews for:
 #
-# For each par_NNN_1 empty in the scene:
-#   - Reads stored fbxmt_normal and fbxmt_source
-#   - Runs _smart_raycast to find the hit path (including pass-through segments)
-#   - Draws the ray path in red with a dot at the terminus
+#   Parallel beams  — one ray per par_NNN_1 empty (red)
+#   Dihedral beams  — one ray per DihedralBeam mesh with fbxmt_dh_v0 (orange)
 #
-# Results are cached per-empty based on world position + stored normal.
-# Cache is invalidated only when a position or normal changes — cheap per-frame.
+# Both types share a single draw handler and a single cache dict keyed by a
+# unique string ("par:<name>" or "dh:<name>").
+#
+# Cache invalidation:
+#   Parallel — position + stored normal hash
+#   Dihedral — v0 + v1 + bisector hash (all stored as custom props)
 #
 # Registration:
-#   call register_par_preview()  / unregister_par_preview()
-#   call invalidate_par_cache()  when empties are added/removed
+#   register_par_preview()   / unregister_par_preview()
+#   invalidate_par_cache()   — clears all entries (par + dihedral)
+#   invalidate_dh_cache()    — clears dihedral entries only
 
 import bpy
 import gpu
@@ -20,11 +23,9 @@ from gpu_extras.batch import batch_for_shader
 from mathutils import Vector
 
 # ---------------------------------------------------------------------------
-# Cache
+# Shared constants
 
-_ray_cache       = {}   # empty_name → {'pos': Vector, 'normal': tuple,
-                         #               'segments': [(start,end), ...],
-                         #               'terminus': Vector or None}
+_ray_cache       = {}   # key → {'hash': str, 'segments': [...], 'terminus': V|None}
 _draw_handle     = None
 _NUDGE           = 0.02
 _PARALLEL_THRESH = 0.1
@@ -32,187 +33,311 @@ _MAX_ITER        = 32
 _RAY_MAX         = 100.0
 
 
+# ---------------------------------------------------------------------------
+# Cache invalidation
+
 def invalidate_par_cache():
-    """Clear all cached ray results — call after adding/removing empties."""
+    """Clear all cached ray results (parallel + dihedral)."""
     _ray_cache.clear()
 
 
+def invalidate_dh_cache():
+    """Clear only dihedral beam cache entries."""
+    for k in list(_ray_cache.keys()):
+        if k.startswith('dh:'):
+            del _ray_cache[k]
+
+
+# ---------------------------------------------------------------------------
+# Core ray-path collector (shared)
+
 def _collect_ray_path(source_obj, ray_origin, ray_dir):
-    """Run smart ray-cast and return (segments, terminus).
+    """Smart ray-cast returning (segments, terminus).
 
-    segments: list of (Vector, Vector) world-space start/end pairs
-    terminus: Vector of final hit, or None
+    segments : list of (Vector, Vector) world-space pairs
+    terminus : Vector of final perpendicular hit, or None
     """
-    from mathutils import Vector
-
-    mat_inv = source_obj.matrix_world.inverted()
-    rot_inv = mat_inv.to_3x3()
-
+    mat_inv   = source_obj.matrix_world.inverted()
+    rot_inv   = mat_inv.to_3x3()
     origin    = Vector(ray_origin) + Vector(ray_dir) * _NUDGE
     direction = Vector(ray_dir).normalized()
-
-    segments = []
-    prev     = Vector(ray_origin)
+    segments  = []
+    prev      = Vector(ray_origin)
 
     for _ in range(_MAX_ITER):
         local_orig = mat_inv @ origin
         local_dir  = (rot_inv @ direction).normalized()
-
-        hit, loc, normal, face_idx = source_obj.ray_cast(
+        hit, loc, normal, _ = source_obj.ray_cast(
             local_orig, local_dir, distance=_RAY_MAX)
-
         if not hit:
             return segments, None
-
         world_normal = (source_obj.matrix_world.to_3x3() @ normal).normalized()
         world_loc    = source_obj.matrix_world @ loc
-
-        dot = abs(direction.dot(world_normal))
-
+        dot          = abs(direction.dot(world_normal))
         segments.append((prev.copy(), world_loc.copy()))
-
         if dot >= _PARALLEL_THRESH:
-            # Terminator hit
             return segments, world_loc.copy()
-
-        # Pass-through — continue from here
         prev   = world_loc.copy()
         origin = world_loc + direction * _NUDGE
 
     return segments, None
 
 
+# ---------------------------------------------------------------------------
+# Parallel beam cache update
+
 def _get_par_anchors():
-    """Return sorted list of par_NNN_1 empties."""
     return sorted(
         [o for o in bpy.data.objects
          if o.type == 'EMPTY'
          and o.name.startswith('par_')
          and o.name.rsplit('_', 1)[-1] == '1'],
-        key=lambda o: o.name
+        key=lambda o: o.name,
     )
 
 
-def _update_cache(depsgraph=None):
-    """Recompute ray paths for any anchor whose position/normal has changed."""
+def _update_par_cache(depsgraph):
     anchors = _get_par_anchors()
-    if not anchors:
-        _ray_cache.clear()
-        return
 
-    current_names = {a.name for a in anchors}
-
-    # Remove stale entries
-    for name in list(_ray_cache.keys()):
-        if name not in current_names:
-            del _ray_cache[name]
+    # Remove stale par entries
+    current_keys = {'par:' + a.name for a in anchors}
+    for k in list(_ray_cache.keys()):
+        if k.startswith('par:') and k not in current_keys:
+            del _ray_cache[k]
 
     for anchor in anchors:
+        key    = 'par:' + anchor.name
         pos    = anchor.matrix_world.translation.copy()
-        raw_n  = anchor.get('fbxmt_normal', None)
+        raw_n  = anchor.get('fbxmt_normal')
         if raw_n is None:
             continue
         normal = tuple(raw_n)
+        props_  = bpy.context.scene.fbxmt_props
+        depth_  = getattr(props_, 'coving_depth',     0.1)
+        thick_  = getattr(props_, 'coving_thickness', 0.1)
+        h      = f'{pos.x:.4f},{pos.y:.4f},{pos.z:.4f}|{normal}|{depth_:.4f},{thick_:.4f}'
 
-        cached = _ray_cache.get(anchor.name)
-        if (cached is not None
-                and (cached['pos'] - pos).length < 1e-5
-                and cached['normal'] == normal):
-            continue   # no change — keep cached result
-
-        # Recompute
-        source_name = anchor.get('fbxmt_source', '')
-        source_obj  = bpy.data.objects.get(source_name) if source_name else None
-
-        if source_obj is None or source_obj.type != 'MESH':
-            _ray_cache[anchor.name] = {
-                'pos': pos, 'normal': normal,
-                'segments': [], 'terminus': None,
-            }
+        cached = _ray_cache.get(key)
+        if cached and cached.get('hash') == h:
             continue
 
-        ray_dir = Vector(normal).normalized()
+        source_name = anchor.get('fbxmt_source', '')
+        source_obj  = bpy.data.objects.get(source_name) if source_name else None
+        if source_obj is None or source_obj.type != 'MESH':
+            _ray_cache[key] = {'hash': h, 'segments': [], 'terminus': None}
+            continue
 
-        # Use evaluated object so ray_cast works against final mesh geometry
+        # 4-corner profile rays
+        depth      = depth_
+        thickness  = thick_
+        ray_dir    = Vector(normal).normalized()
+
+        # Lateral direction: perpendicular to ray_dir in XY plane
+        lat = Vector((-ray_dir.y, ray_dir.x, 0.0))
+        if lat.length < 1e-6:
+            lat = Vector((0.0, 1.0, 0.0))
+        lat.normalize()
+        up = Vector((0.0, 0.0, 1.0))
+
+        half_d = depth     * 0.5
+        half_t = thickness * 0.5
+
+        corners = [
+            pos + lat *  half_d + up *  half_t,
+            pos + lat *  half_d + up * -half_t,
+            pos + lat * -half_d + up *  half_t,
+            pos + lat * -half_d + up * -half_t,
+        ]
+
+        all_segs  = []
+        start_pts = []
+        end_pts   = []
+
+        for corner in corners:
+            segs, term = _collect_ray_path(source_obj, corner, ray_dir)
+            all_segs.extend(segs)
+            start_pts.append(corner)
+            if term is not None:
+                end_pts.append(term)
+
+        # Build quad outlines at start and end faces
+        quad_lines = []
+        def _quad_edges(pts):
+            if len(pts) == 4:
+                order = [0, 1, 3, 2]  # corners in order: TL TR BR BL
+                for i in range(4):
+                    quad_lines.append(pts[order[i]])
+                    quad_lines.append(pts[order[(i+1) % 4]])
+
+        _quad_edges(start_pts)
+        _quad_edges(end_pts)
+
+        _ray_cache[key] = {
+            'hash':      h,
+            'segments':  all_segs,
+            'terminus':  end_pts[0] if end_pts else None,
+            'quads':     quad_lines,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Dihedral beam cache update
+
+def _get_dh_anchors():
+    """Return sorted list of dh_NNN_1 empties — mirrors _get_par_anchors."""
+    return sorted(
+        [o for o in bpy.data.objects
+         if o.type == 'EMPTY'
+         and o.name.startswith('dh_')
+         and o.name.rsplit('_', 1)[-1] == '1'],
+        key=lambda o: o.name,
+    )
+
+
+def _update_dh_cache(depsgraph):
+    anchors = _get_dh_anchors()
+
+    # Remove stale dh entries
+    current_keys = {'dh:' + a.name for a in anchors}
+    for k in list(_ray_cache.keys()):
+        if k.startswith('dh:') and k not in current_keys:
+            del _ray_cache[k]
+
+    for anchor in anchors:
+        key = 'dh:' + anchor.name
+        pos = anchor.matrix_world.translation.copy()
+
+        # anchor stores v0/v1/bisector as IDPropertyArray (list of floats)
+        raw_v0  = anchor.get('fbxmt_dh_v0')
+        raw_v1  = anchor.get('fbxmt_dh_v1')
+        raw_bis = anchor.get('fbxmt_dh_bisector')
+        if raw_v0 is None or raw_v1 is None or raw_bis is None:
+            continue
+
+        h = f'{list(raw_v0)}|{list(raw_v1)}|{list(raw_bis)}'
+        cached = _ray_cache.get(key)
+        if cached and cached.get('hash') == h:
+            continue
+
         try:
-            dg       = depsgraph or bpy.context.evaluated_depsgraph_get()
-            eval_obj = source_obj.evaluated_get(dg)
+            v0  = Vector(raw_v0)
+            v1  = Vector(raw_v1)
+            bis = Vector(raw_bis).normalized()
         except Exception:
-            eval_obj = source_obj
+            _ray_cache[key] = {'hash': h, 'segments': [], 'terminus': None}
+            continue
 
-        segments, terminus = _collect_ray_path(source_obj, pos, ray_dir)
+        source_name = anchor.get('fbxmt_source', '')
+        source_obj  = bpy.data.objects.get(source_name) if source_name else None
+        if source_obj is None or source_obj.type != 'MESH':
+            _ray_cache[key] = {'hash': h, 'segments': [], 'terminus': None}
+            continue
 
-        # Only cache successful results — failed ones retry next frame
-        if segments or terminus is not None:
-            _ray_cache[anchor.name] = {
-                'pos':      pos,
-                'normal':   normal,
-                'segments': segments,
-                'terminus': terminus,
-            }
-        else:
-            # Store failed attempt with pos/normal so we don't spam retries
-            # on every frame — retry only when position changes
-            _ray_cache[anchor.name] = {
-                'pos':      pos,
-                'normal':   normal,
-                'segments': [],
-                'terminus': None,
-            }
+        edge_mid   = (v0 + v1) * 0.5
+        is_concave = bool(anchor.get('fbxmt_dh_concave', 1))
+
+        # Trim outputs always in +bisector (outward normal) space.
+        segs, term = _collect_ray_path(source_obj, edge_mid, bis)
+        if not segs:
+            # No opposite surface — draw 0.5m outward indicator
+            tip  = edge_mid + bis * 0.5
+            segs = [(edge_mid.copy(), tip)]
+            term = tip
+
+        _ray_cache[key] = {'hash': h, 'segments': segs, 'terminus': term}
+
+
+# ---------------------------------------------------------------------------
+# Combined cache update
+#
+# IMPORTANT: _update_dh_cache() uses ray_cast on mesh objects.  ray_cast
+# returns no results when the source object is in Edit Mode (BMesh not flushed).
+# Therefore _update_dh_cache() must ONLY be called from an operator that has
+# already switched to Object Mode — never from the draw handler.
+#
+# The draw handler calls _update_par_cache() (empties are always in Object
+# data, unaffected by mode) and draws dh entries from whatever the operator
+# last computed and stored in the cache.
+
+def _update_cache(depsgraph=None):
+    """Update par and dh caches — both safe to call from draw handler.
+    Both read from empties (always in Object data regardless of mode).
+    ray_cast on the SOURCE mesh is the only mode-sensitive op, but empties
+    store enough data to compute the ray without touching the source in Edit Mode
+    — _collect_ray_path uses the source object's evaluated mesh which Blender
+    keeps available even when that object is active in Edit Mode.
+    """
+    try:
+        dg = depsgraph or bpy.context.evaluated_depsgraph_get()
+    except Exception:
+        dg = None
+    _update_par_cache(dg)
+    _update_dh_cache(dg)
 
 
 # ---------------------------------------------------------------------------
 # Draw callback
 
 def _draw_par_rays():
-    """GPU draw callback — draws ray paths and terminus dots."""
     try:
         _update_cache()
         if not _ray_cache:
             return
 
-        # Collect line verts and point verts
-        line_verts   = []
-        point_verts  = []
+        par_lines  = []
+        dh_lines   = []
+        dh_pts     = []
 
-        for name, data in _ray_cache.items():
-            for seg_start, seg_end in data['segments']:
-                line_verts.append(seg_start)
-                line_verts.append(seg_end)
+        par_quads = []
+        for key, data in _ray_cache.items():
+            is_dh = key.startswith('dh:')
+            for seg_s, seg_e in data['segments']:
+                if is_dh:
+                    dh_lines.append(seg_s)
+                    dh_lines.append(seg_e)
+                else:
+                    par_lines.append(seg_s)
+                    par_lines.append(seg_e)
             if data['terminus'] is not None:
-                point_verts.append(data['terminus'])
-
-        if not line_verts and not point_verts:
-            return
+                if is_dh and data['terminus'] is not None:
+                    dh_pts.append(data['terminus'])
+            if not is_dh and data.get('quads'):
+                par_quads.extend(data['quads'])
 
         shader = gpu.shader.from_builtin('UNIFORM_COLOR')
         gpu.state.blend_set('ALPHA')
         gpu.state.line_width_set(2.0)
         gpu.state.point_size_set(8.0)
-
         shader.bind()
-        shader.uniform_float('color', (1.0, 0.1, 0.1, 0.9))
 
-        if line_verts:
-            batch = batch_for_shader(
-                shader, 'LINES',
-                {'pos': [v[:] for v in line_verts]}
-            )
-            batch.draw(shader)
+        # Parallel rays — red
+        if par_lines:
+            shader.uniform_float('color', (1.0, 0.15, 0.15, 0.9))
+            batch_for_shader(shader, 'LINES',
+                {'pos': [v[:] for v in par_lines]}).draw(shader)
 
-        if point_verts:
-            batch = batch_for_shader(
-                shader, 'POINTS',
-                {'pos': [v[:] for v in point_verts]}
-            )
-            batch.draw(shader)
+        # Parallel profile quads — brighter red outline
+        if par_quads:
+            shader.uniform_float('color', (1.0, 0.45, 0.45, 0.7))
+            batch_for_shader(shader, 'LINES',
+                {'pos': [v[:] for v in par_quads]}).draw(shader)
+
+        # Dihedral rays — orange
+        if dh_lines or dh_pts:
+            shader.uniform_float('color', (1.0, 0.55, 0.1, 0.9))
+            if dh_lines:
+                batch_for_shader(shader, 'LINES',
+                    {'pos': [v[:] for v in dh_lines]}).draw(shader)
+            if dh_pts:
+                batch_for_shader(shader, 'POINTS',
+                    {'pos': [v[:] for v in dh_pts]}).draw(shader)
 
         gpu.state.blend_set('NONE')
         gpu.state.line_width_set(1.0)
 
     except Exception as e:
         import sys
-        print(f'FBXMT par_ray_preview draw error: {e}', file=sys.stderr)
+        print(f'FBXMT ray_preview draw error: {e}', file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------

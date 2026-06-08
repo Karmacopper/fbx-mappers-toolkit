@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "0.25.1"
+__version__ = "0.39.7"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -48,10 +48,32 @@ from .ceiling_deco import (
     OT_FBXMT_Generate_Beams,
 )
 from .beam_placement import (
+    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
+    FBXMT_GGT_ParallelBeam,
+    FBXMT_GGT_ParallelGroup,
+    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
+    FBXMT_GGT_ParallelBeam,
+    FBXMT_GGT_ParallelGroup,
+    OT_FBXMT_Clear_All_Empties,
+    FBXMT_MT_ClearEmpties,
     OT_FBXMT_Quick_Beam,
-    OT_FBXMT_Quick_Beam,
+    OT_FBXMT_Quick_Beam_Refresh,
+    OT_FBXMT_Quick_Beam_Gizmo_Drag,
+    FBXMT_GGT_QuickBeam,
+    OT_FBXMT_Place_Dihedral,
+    OT_FBXMT_Generate_Dihedral,
+    OT_FBXMT_Clear_Dihedral,
+    OT_FBXMT_Dihedral_Beam_Refresh,
+    OT_FBXMT_Dihedral_Beam_Gizmo_Drag,
+    FBXMT_GGT_DihedralBeam,
+    OT_FBXMT_Preview_Dihedral_Ray,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
+    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
+    FBXMT_GGT_ParallelBeam,
+    FBXMT_GGT_ParallelGroup,
+    OT_FBXMT_Clear_All_Empties,
+    FBXMT_MT_ClearEmpties,
     OT_FBXMT_Clear_Parallel,
     OT_FBXMT_Place_Spokes,
     OT_FBXMT_Clear_Spokes,
@@ -140,8 +162,23 @@ classes = (
     OT_FBXMT_Generate_Curve,
     OT_FBXMT_Generate_Beams,
     OT_FBXMT_Quick_Beam,
+    OT_FBXMT_Quick_Beam_Refresh,
+    OT_FBXMT_Quick_Beam_Gizmo_Drag,
+    FBXMT_GGT_QuickBeam,
+    OT_FBXMT_Place_Dihedral,
+    OT_FBXMT_Generate_Dihedral,
+    OT_FBXMT_Clear_Dihedral,
+    OT_FBXMT_Dihedral_Beam_Refresh,
+    OT_FBXMT_Dihedral_Beam_Gizmo_Drag,
+    FBXMT_GGT_DihedralBeam,
+    OT_FBXMT_Preview_Dihedral_Ray,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
+    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
+    FBXMT_GGT_ParallelBeam,
+    FBXMT_GGT_ParallelGroup,
+    OT_FBXMT_Clear_All_Empties,
+    FBXMT_MT_ClearEmpties,
     OT_FBXMT_Clear_Parallel,
     OT_FBXMT_Place_Spokes,
     OT_FBXMT_Clear_Spokes,
@@ -210,12 +247,13 @@ def register():
     for c in classes:
         try:
             bpy.utils.register_class(c)
-        except Exception:
+        except Exception as e1:
             try:
                 bpy.utils.unregister_class(c)
                 bpy.utils.register_class(c)
-            except Exception:
-                pass
+            except Exception as e2:
+                import sys
+                print(f'FBXMT register FAILED: {c.__name__}: {e2}', file=sys.stderr)
 
     bpy.types.Scene.fbxmt_props = bpy.props.PointerProperty(type=FBXMT_Props)
     bpy.types.Scene.fbxmt_prefs_global = bpy.props.PointerProperty(type=FBXMT_GlobalPrefs)
