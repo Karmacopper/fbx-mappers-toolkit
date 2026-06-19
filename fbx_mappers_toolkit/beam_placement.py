@@ -800,7 +800,7 @@ class OT_FBXMT_Place_Spokes(Operator):
             beam_mesh.update()
 
             beam_obj = bpy.data.objects.new(f'{gname}_Beam', beam_mesh)
-            context.collection.objects.link(beam_obj)
+            context.scene.collection.objects.link(beam_obj)
             generated.append(beam_obj)
 
             if source_name:
@@ -816,7 +816,7 @@ class OT_FBXMT_Place_Spokes(Operator):
                 me = bpy.data.meshes.new(mname)
                 bm2 = bmesh.new(); bm2.verts.new(co); bm2.to_mesh(me); bm2.free(); me.update()
                 mo = bpy.data.objects.new(mname, me)
-                context.collection.objects.link(mo)
+                context.scene.collection.objects.link(mo)
                 vert_markers.append(mo)
 
         # ── OBJ export ────────────────────────────────────────────────────
@@ -1292,7 +1292,7 @@ class OT_FBXMT_Quick_Beam(bpy.types.Operator):
         beam_mesh.update()
 
         beam_obj = bpy.data.objects.new('QuickBeam', beam_mesh)
-        context.collection.objects.link(beam_obj)
+        context.scene.collection.objects.link(beam_obj)
 
         # Store anchors for gizmo/rebuild
         beam_obj['fbxmt_qb_anchors'] = json.dumps(
@@ -1437,6 +1437,8 @@ class FBXMT_GGT_QuickBeam(bpy.types.GizmoGroup):
         op.mode = 'OVERRUN_END'
 
     def draw_prepare(self, context):
+        if not hasattr(self, 'gz_start'):
+            return
         obj   = context.active_object
         props = context.scene.fbxmt_props
         frame = FBXMT_GGT_QuickBeam._get_frame(obj, props)
@@ -1880,7 +1882,7 @@ class OT_FBXMT_Generate_Dihedral(bpy.types.Operator):
             beam_mesh.update()
 
             beam_obj = bpy.data.objects.new(f'{anchor.name[:-2]}_Beam', beam_mesh)
-            context.collection.objects.link(beam_obj)
+            context.scene.collection.objects.link(beam_obj)
 
             beam_obj['fbxmt_dh_anchor']   = anchor.name
             beam_obj['fbxmt_dh_start']    = list(start_co)
@@ -2143,7 +2145,6 @@ class FBXMT_GGT_DihedralBeam(bpy.types.GizmoGroup):
             gz.alpha_highlight = 1.0
             gz.scale_basis     = 0.6 * scale
             gz.use_draw_modal  = True
-            gz.draw_options    = {'NO_ORTHO_SCALE'}
             return gz
 
         self.gz_start = _arrow((1.0, 0.45, 0.1))   # orange — overrun start
@@ -2161,6 +2162,9 @@ class FBXMT_GGT_DihedralBeam(bpy.types.GizmoGroup):
         op.mode = 'OFFSET'
 
     def draw_prepare(self, context):
+        # Guard: setup may not have completed (e.g. raised an exception)
+        if not hasattr(self, 'gz_start'):
+            return
         obj   = context.active_object
         props = context.scene.fbxmt_props
         frame = FBXMT_GGT_DihedralBeam._get_frame(obj, props)
@@ -2314,22 +2318,33 @@ def _par_build_mesh(beam_obj, props):
     t_dir  = _vec(t_raw).normalized()
     lat_dir = _vec(lat_raw).normalized()
 
-    overrun_s = getattr(props, 'par_overrun_start', 0.25)
-    overrun_e = getattr(props, 'par_overrun_end',   0.25)
-    offset_v   = getattr(props, 'par_offset_v',   0.0)
-    offset_lat = getattr(props, 'par_offset_lat', 0.0)
+    overrun_s  = getattr(props, 'par_overrun_start',        0.25)
+    overrun_e  = getattr(props, 'par_overrun_end',          0.25)
+    ep_inset_s = getattr(props, 'par_endpoint_inset_start', 0.0)
+    ep_inset_e = getattr(props, 'par_endpoint_inset_end',   0.0)
+    offset_v   = getattr(props, 'par_offset_v',             0.0)
+    offset_lat = getattr(props, 'par_offset_lat',           0.0)
 
-    v_shift  = Vector((0, 0, offset_v))
+    v_shift   = Vector((0, 0, offset_v))
     lat_shift = lat_dir * offset_lat
 
-    start_co = start - t_dir * overrun_s + v_shift + lat_shift
-    end_co   = end   + t_dir * overrun_e + v_shift + lat_shift
+    # overrun extends past the anchor (away from wall); ep_inset pulls back
+    # toward the anchor (shortens the beam end).  Both along t_dir.
+    # start_co moves in -t_dir by overrun, then +t_dir by ep_inset (net shorter)
+    # end_co   moves in +t_dir by overrun, then -t_dir by ep_inset (net shorter)
+    start_co = start - t_dir * overrun_s + t_dir * ep_inset_s + v_shift + lat_shift
+    end_co   = end   + t_dir * overrun_e - t_dir * ep_inset_e + v_shift + lat_shift
 
-    from .ceiling_deco import _build_beam
-    beam_bm = bmesh.new()
-    _build_beam(beam_bm, start_co, end_co,
-                props.coving_depth, props.coving_thickness,
-                0.5, 0.5, mat_index=0)
+    from .ceiling_deco import _build_beam_per_vert
+    beam_bm  = bmesh.new()
+    s_offsets = [beam_obj.get(f'fbxmt_par_vs{i}', 0.0) for i in range(4)]
+    e_offsets = [beam_obj.get(f'fbxmt_par_ve{i}', 0.0) for i in range(4)]
+    _build_beam_per_vert(beam_bm, start_co, end_co,
+                         props.coving_depth, props.coving_thickness,
+                         0.5, 0.5,
+                         s_offsets=s_offsets,
+                         e_offsets=e_offsets,
+                         mat_index=0)
     beam_bm.to_mesh(beam_obj.data)
     beam_bm.free()
     beam_obj.data.update()
@@ -2442,7 +2457,7 @@ def _par_regen_group(context, grp_empty, props):
         beam_mesh.update()
 
         beam_obj = bpy.data.objects.new(f'{grp_name}_Beam', beam_mesh)
-        context.collection.objects.link(beam_obj)
+        context.scene.collection.objects.link(beam_obj)
 
         # Boolean
         mod           = beam_obj.modifiers.new('FBXMT_BoolTrim_Source', 'BOOLEAN')
@@ -2453,6 +2468,8 @@ def _par_regen_group(context, grp_empty, props):
         # Store gizmo data
         beam_obj['fbxmt_par_start']       = list(pos)
         beam_obj['fbxmt_par_end']         = list(hit_loc)
+        beam_obj['fbxmt_par_wall_start']  = list(pos)       # immutable wall-surface anchor
+        beam_obj['fbxmt_par_wall_end']    = list(hit_loc)   # immutable wall-surface anchor
         beam_obj['fbxmt_par_source']      = source_name
         beam_obj['fbxmt_par_t_dir']       = list(t_dir)
         beam_obj['fbxmt_par_lat_dir']     = list(lat_dir)
@@ -2481,79 +2498,331 @@ def _vec_or_none(raw):
     return Vector(raw)
 
 
+
 # ---------------------------------------------------------------------------
-# Parallel Beam Gizmo Drag operator
+# Parallel Beam Gizmo Drag — one concrete class per mode
+#
+# Blender 5.x resets StringProperty defaults on gizmo operator properties
+# between setup() and invocation, so a single "mode" string prop is
+# unreliable.  Each mode gets its own bl_idname so the mode is baked in
+# at the class level and can never be reset.
 
-class OT_FBXMT_Parallel_Beam_Gizmo_Drag(bpy.types.Operator):
-    """Modal drag for Parallel Beam gizmo arrows."""
-    bl_idname  = 'fbxmt.parallel_beam_gizmo_drag'
-    bl_label   = 'Parallel Beam Drag'
+class _ParBeamDragBase:
+    """Mixin — shared invoke / modal / cancel logic for all parallel drag ops."""
     bl_options = {'REGISTER', 'UNDO', 'INTERNAL'}
+    # Subclasses set _MODE = 'OVERRUN_START' etc.
+    _MODE: str = ''
 
-    mode: bpy.props.StringProperty(default='OVERRUN_START')
+    # ── helpers ──────────────────────────────────────────────────────────────
+    @staticmethod
+    def _accept(obj):
+        if obj is None:
+            return False
+        if obj.type == 'EMPTY' and obj.get('fbxmt_par_group'):
+            return True
+        return obj.get('fbxmt_par_start') is not None
 
+    def _rebuild(self, context, obj, props):
+        mode = self._MODE
+        if mode in ('SPAN_INSET_START', 'SPAN_INSET_END'):
+            # Lateral offset of first/last beam — shift their stored anchor
+            # along span_dir by the inset value, then rebuild mesh in-place.
+            if obj.type == 'EMPTY' and obj.get('fbxmt_par_group'):
+                span_dir_raw = obj.get('fbxmt_par_span_dir')
+                print(f'[DBG] _rebuild  mode={mode}  obj={obj.name}  span_dir_raw={span_dir_raw}')
+                if span_dir_raw is None:
+                    print('[DBG] _rebuild  ABORT — no fbxmt_par_span_dir')
+                    return
+                span_dir = Vector(span_dir_raw).normalized()
+                span_start_raw = obj.get('fbxmt_par_span_start')
+                print(f'[DBG] _rebuild  span_start_raw={span_start_raw}')
+                if span_start_raw is None:
+                    print('[DBG] _rebuild  ABORT — no fbxmt_par_span_start')
+                    return
+                span_start = Vector(span_start_raw)
+                inset_s = getattr(props, 'par_inset_start', 0.0)
+                inset_e = getattr(props, 'par_inset_end',   0.0)
+                print(f'[DBG] _rebuild  inset_s={inset_s:.3f}  inset_e={inset_e:.3f}')
+                children = [o for o in bpy.data.objects
+                            if o.get('fbxmt_par_group_empty') == obj.name]
+                n = len(children)
+                print(f'[DBG] _rebuild  children={[c.name for c in children]}  n={n}')
+                for child in children:
+                    idx = child.get('fbxmt_par_group_idx', -1)
+                    orig_raw = child.get('fbxmt_par_start')
+                    print(f'[DBG] _rebuild  child={child.name}  idx={idx}  orig_start={orig_raw}  fbxmt_par_end={child.get("fbxmt_par_end")}')
+                    if orig_raw is None:
+                        continue
+                    if idx == 0:
+                        new_pos = span_start + span_dir * inset_s
+                        delta = new_pos - Vector(orig_raw)
+                        child['fbxmt_par_start'] = list(new_pos)
+                        end_raw = child.get('fbxmt_par_end')
+                        if end_raw:
+                            child['fbxmt_par_end'] = list(Vector(end_raw) + delta)
+                        print(f'[DBG] _rebuild  idx=0  new_start={list(new_pos)}  delta={list(delta)}')
+                    elif idx == n - 1:
+                        span_end_raw = obj.get('fbxmt_par_span_end')
+                        if span_end_raw:
+                            span_end = Vector(span_end_raw)
+                            new_pos = span_end - span_dir * inset_e
+                            delta = new_pos - Vector(orig_raw)
+                            child['fbxmt_par_start'] = list(new_pos)
+                            end_raw = child.get('fbxmt_par_end')
+                            if end_raw:
+                                child['fbxmt_par_end'] = list(Vector(end_raw) + delta)
+                            print(f'[DBG] _rebuild  idx={idx}(last)  new_start={list(new_pos)}  delta={list(delta)}')
+                    result = _par_build_mesh(child, props)
+                    print(f'[DBG] _rebuild  _par_build_mesh returned {result}')
+                    for mod in child.modifiers:
+                        if mod.type == 'BOOLEAN':
+                            mod.show_viewport = True
+        elif mode in ('OFFSET_V_UP', 'OFFSET_V_DOWN'):
+            if obj.type == 'EMPTY' and obj.get('fbxmt_par_group'):
+                for child in [o for o in bpy.data.objects
+                               if o.get('fbxmt_par_group_empty') == obj.name]:
+                    _par_build_mesh(child, props)
+                    for mod in child.modifiers:
+                        if mod.type == 'BOOLEAN':
+                            mod.show_viewport = True
+            else:
+                _par_build_mesh(obj, props)
+                self._restore_bools(obj)
+        else:
+            _par_build_mesh(obj, props)
+            self._restore_bools(obj)
+
+        # VERT modes always rebuild the individual beam in place
+        if mode in ('VERT_S0', 'VERT_S1', 'VERT_S2', 'VERT_S3',
+                    'VERT_E0', 'VERT_E1', 'VERT_E2', 'VERT_E3'):
+            if obj.get('fbxmt_par_start') is not None:
+                _par_build_mesh(obj, props)
+                self._restore_bools(obj)
+
+    def _restore_bools(self, obj):
+        for mod in obj.modifiers:
+            if mod.name in self._bool_states:
+                mod.show_viewport = self._bool_states[mod.name]
+
+    # ── Blender operator methods ──────────────────────────────────────────────
     def invoke(self, context, event):
         obj = context.active_object
-        # Accept either a beam mesh or the group empty
-        if obj is None:
+        if not self._accept(obj):
             return {'CANCELLED'}
-        if obj.type == 'EMPTY' and obj.get('fbxmt_par_group'):
-            pass  # group empty — ok
-        elif obj.get('fbxmt_par_start') is None:
-            return {'CANCELLED'}
-        props = context.scene.fbxmt_props
+
+        import time
+        now  = time.time()
+        mode = self._MODE
+
+        # Double-click detection via timestamp stored on the object
+        # Orange overrun gizmos: double-click toggles vert mode
+        if mode in ('OVERRUN_START', 'OVERRUN_END'):
+            last_key = '_fbxmt_last_overrun_click'
+            last = obj.get(last_key, 0.0)
+            obj[last_key] = now
+            if now - last < 0.4:
+                # Double-click — toggle vert mode
+                obj['fbxmt_par_vert_mode'] = not bool(obj.get('fbxmt_par_vert_mode', False))
+                for area in context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        area.tag_redraw()
+                return {'FINISHED'}
+
+        # Per-vert gizmos: double-click resets that vert to 0
+        if mode.startswith(('VERT_S', 'VERT_E')):
+            end = 's' if mode.startswith('VERT_S') else 'e'
+            idx = int(mode[-1])
+            key = f'fbxmt_par_v{end}{idx}'
+            last_key = f'_fbxmt_last_vert_click_{key}'
+            last = obj.get(last_key, 0.0)
+            obj[last_key] = now
+            if now - last < 0.4:
+                # Double-click — reset this vert
+                obj[key] = 0.0
+                props = context.scene.fbxmt_props
+                _par_build_mesh(obj, props)
+                for area in context.screen.areas:
+                    if area.type == 'VIEW_3D':
+                        area.tag_redraw()
+                return {'FINISHED'}
+        props              = context.scene.fbxmt_props
         self._start_x      = event.mouse_x
         self._start_y      = event.mouse_y
+        self._last_x       = event.mouse_x
+        self._last_y       = event.mouse_y
+        self._accum        = 0.0   # single accumulator for all modes
         self._obj_name     = obj.name
-        self._orig_os      = getattr(props, 'par_overrun_start', 0.25)
-        self._orig_oe      = getattr(props, 'par_overrun_end',   0.25)
-        self._orig_is      = getattr(props, 'par_inset_start',   0.25)
-        self._orig_ie      = getattr(props, 'par_inset_end',     0.25)
-        self._orig_sis     = getattr(props, 'par_inset_start', 0.0)
-        self._orig_sie     = getattr(props, 'par_inset_end',   0.0)
-        self._orig_ov      = getattr(props, 'par_offset_v',   0.0)
-        self._orig_ol      = getattr(props, 'par_offset_lat', 0.0)
-        # Disable booleans during drag
-        self._bool_states = {}
+        self._orig_os      = getattr(props, 'par_overrun_start',        0.25)
+        self._orig_oe      = getattr(props, 'par_overrun_end',          0.25)
+        self._orig_is      = getattr(props, 'par_inset_start',          0.0)
+        self._orig_ie      = getattr(props, 'par_inset_end',            0.0)
+        self._orig_ov      = getattr(props, 'par_offset_v',             0.0)
+        self._orig_ol      = getattr(props, 'par_offset_lat',           0.0)
+        self._orig_verts   = {}
+        for i in range(4):
+            self._orig_verts[f'fbxmt_par_vs{i}'] = obj.get(f'fbxmt_par_vs{i}', 0.0)
+            self._orig_verts[f'fbxmt_par_ve{i}'] = obj.get(f'fbxmt_par_ve{i}', 0.0)
+        self._bool_states  = {}
+
+        # Determine world-space arrow direction for this mode, then project to screen
+        from mathutils import Vector
+        import bpy_extras.view3d_utils as v3u
+
+        def _vec(raw):
+            return Vector(raw).normalized() if raw else None
+
+        # Arrow world directions per mode (sign matches gizmo arrow direction in draw_prepare)
+        mode = self._MODE
+        arrow_world = None
+        if mode == 'OVERRUN_START':
+            arrow_world = _vec(obj.get('fbxmt_par_t_dir'))
+            if arrow_world: arrow_world = -arrow_world   # gz_os points -t_dir
+        elif mode == 'OVERRUN_END':
+            arrow_world = _vec(obj.get('fbxmt_par_t_dir'))  # gz_oe points +t_dir
+        elif mode == 'INSET_START':
+            arrow_world = _vec(obj.get('fbxmt_par_t_dir'))  # gz_is points +t_dir
+        elif mode == 'INSET_END':
+            arrow_world = _vec(obj.get('fbxmt_par_t_dir'))
+            if arrow_world: arrow_world = -arrow_world   # gz_ie points -t_dir
+        elif mode == 'SPAN_INSET_START':
+            arrow_world = _vec(obj.get('fbxmt_par_span_dir'))  # gz_ss points +span_dir
+        elif mode == 'SPAN_INSET_END':
+            arrow_world = _vec(obj.get('fbxmt_par_span_dir'))
+            if arrow_world: arrow_world = -arrow_world   # gz_se points -span_dir
+        elif mode in ('OFFSET_V_UP', 'OFFSET_V_DOWN'):
+            arrow_world = Vector((0, 0, 1))              # gz_vu points +Z
+        elif mode in ('OFFSET_LAT_A', 'OFFSET_LAT_B'):
+            arrow_world = _vec(obj.get('fbxmt_par_lat_dir'))  # gz_la points +lat_dir
+        elif mode in ('VERT_S0', 'VERT_S1', 'VERT_S2', 'VERT_S3'):
+            arrow_world = _vec(obj.get('fbxmt_par_t_dir'))
+            if arrow_world: arrow_world = -arrow_world   # start verts point -t_dir (into wall)
+        elif mode in ('VERT_E0', 'VERT_E1', 'VERT_E2', 'VERT_E3'):
+            arrow_world = _vec(obj.get('fbxmt_par_t_dir'))   # end verts point +t_dir (into wall)
+
+        # Project arrow into screen space
+        self._screen_dir = (1.0, 0.0)  # fallback
+        if arrow_world:
+            region, rv3d = None, None
+            for area in context.screen.areas:
+                if area.type == 'VIEW_3D':
+                    for r in area.regions:
+                        if r.type == 'WINDOW':
+                            region = r
+                    rv3d = area.spaces.active.region_3d
+                    break
+            if region and rv3d:
+                origin_3d = Vector(obj.matrix_world.translation)
+                tip_3d    = origin_3d + arrow_world
+                p0 = v3u.location_3d_to_region_2d(region, rv3d, origin_3d)
+                p1 = v3u.location_3d_to_region_2d(region, rv3d, tip_3d)
+                if p0 and p1:
+                    sc = p1 - p0
+                    ln = sc.length
+                    if ln > 1e-4:
+                        self._screen_dir = (sc.x / ln, sc.y / ln)
+
+        print(f'[DBG] invoke  _MODE={self._MODE!r}  obj={obj.name!r}  screen_dir={self._screen_dir}')
+
         for mod in obj.modifiers:
             if mod.type == 'BOOLEAN':
                 self._bool_states[mod.name] = mod.show_viewport
                 mod.show_viewport = False
         context.window_manager.modal_handler_add(self)
+        context.window.cursor_modal_set('SCROLL_X')
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
         if event.type == 'MOUSEMOVE':
-            dx = event.mouse_x - self._start_x
-            dy = event.mouse_y - self._start_y
-            scale = 0.005 if not event.shift else 0.0005
-            props = context.scene.fbxmt_props
+            win    = context.window
+            margin = 20
+            wx, wy = event.mouse_x, event.mouse_y
 
-            if self.mode == 'OVERRUN_START':
-                props.par_overrun_start = max(0.0, self._orig_os + dx * scale)
-            elif self.mode == 'OVERRUN_END':
-                props.par_overrun_end = max(0.0, self._orig_oe - dx * scale)
-            elif self.mode == 'INSET_START':
-                props.par_inset_start = max(0.0, self._orig_is - dx * scale)
-            elif self.mode == 'INSET_END':
-                props.par_inset_end = max(0.0, self._orig_ie + dx * scale)
-            elif self.mode == 'SPAN_INSET_START':
-                grid = _par_grid_snap(context)
-                raw = self._orig_sis + dx * scale
-                props.par_inset_start = max(0.0, round(raw / grid) * grid)
-            elif self.mode == 'SPAN_INSET_END':
-                grid = _par_grid_snap(context)
-                raw = self._orig_sie - dx * scale
-                props.par_inset_end = max(0.0, round(raw / grid) * grid)
-            elif self.mode in ('OFFSET_V_UP', 'OFFSET_V_DOWN'):
-                raw = self._orig_ov + dy * scale
-                # Snap to scene grid
-                grid = _par_grid_snap(context)
-                props.par_offset_v = round(raw / grid) * grid
-            elif self.mode in ('OFFSET_LAT_A', 'OFFSET_LAT_B'):
-                raw = self._orig_ol + dx * scale
-                grid = _par_grid_snap(context)
-                props.par_offset_lat = round(raw / grid) * grid
+            # Project mouse delta onto screen-space arrow direction
+            raw_dx   = wx - self._last_x
+            raw_dy   = wy - self._last_y
+            sd       = self._screen_dir
+            frame_d  = raw_dx * sd[0] + raw_dy * sd[1]
+            # Modifier keys control both drag sensitivity and snap grid:
+            #   Ctrl  = 0.25 m steps   Alt   = 0.5 m steps
+            #   none  = 0.1 m steps    Shift = 0.01 m steps
+            if event.ctrl:
+                snap = 0.25;  scale = 0.005
+            elif event.alt:
+                snap = 0.5;   scale = 0.005
+            elif event.shift:
+                snap = 0.01;  scale = 0.0005
+            else:
+                snap = 0.1;   scale = 0.005
+            props    = context.scene.fbxmt_props
+            mode     = self._MODE
+            grid     = _par_grid_snap(context)
+
+            self._accum += frame_d * scale
+            delta = round(self._accum / snap) * snap   # snapped delta for display + value
+            hint  = f'Ctrl=0.25m  Alt=0.5m  none=0.1m  Shift=0.01m  |  Esc=cancel'
+
+            if mode == 'OVERRUN_START':
+                v = max(0.0, self._orig_os + delta)
+                props.par_overrun_start = v
+                context.workspace.status_text_set(f'Overrun Start  Δ {delta:+.3f} m    |  {hint}')
+            elif mode == 'OVERRUN_END':
+                v = max(0.0, self._orig_oe + delta)
+                props.par_overrun_end = v
+                context.workspace.status_text_set(f'Overrun End  Δ {delta:+.3f} m    |  {hint}')
+            elif mode == 'INSET_START':
+                v = max(0.0, self._orig_is + delta)
+                props.par_endpoint_inset_start = v
+                context.workspace.status_text_set(f'Wall Inset Start  Δ {delta:+.3f} m    |  {hint}')
+            elif mode == 'INSET_END':
+                v = max(0.0, self._orig_ie + delta)
+                props.par_endpoint_inset_end = v
+                context.workspace.status_text_set(f'Wall Inset End  Δ {delta:+.3f} m    |  {hint}')
+            elif mode == 'SPAN_INSET_START':
+                v = self._orig_is + delta
+                props.par_inset_start = v
+                context.workspace.status_text_set(f'First Beam Offset  Δ {delta:+.3f} m    |  {hint}')
+                print(f'[DBG] SPAN_INSET_START  frame_d={frame_d:.2f}  accum={self._accum:.4f}  delta={delta:.3f}  prop={v:.3f}')
+            elif mode == 'SPAN_INSET_END':
+                v = self._orig_ie + delta
+                props.par_inset_end = v
+                context.workspace.status_text_set(f'Last Beam Offset  Δ {delta:+.3f} m    |  {hint}')
+                print(f'[DBG] SPAN_INSET_END    frame_d={frame_d:.2f}  accum={self._accum:.4f}  delta={delta:.3f}  prop={v:.3f}')
+            elif mode in ('OFFSET_V_UP', 'OFFSET_V_DOWN'):
+                v = self._orig_ov + delta
+                props.par_offset_v = v
+                context.workspace.status_text_set(f'Vertical Offset  Δ {delta:+.3f} m    |  {hint}')
+            elif mode in ('OFFSET_LAT_A', 'OFFSET_LAT_B'):
+                v = self._orig_ol + delta
+                props.par_offset_lat = v
+                context.workspace.status_text_set(f'Lateral Offset  Δ {delta:+.3f} m    |  {hint}')
+            elif mode in ('VERT_S0', 'VERT_S1', 'VERT_S2', 'VERT_S3'):
+                idx = int(mode[-1])
+                key = f'fbxmt_par_vs{idx}'
+                orig = self._orig_verts.get(key, 0.0)
+                obj  = bpy.data.objects.get(self._obj_name)
+                if obj:
+                    obj[key] = orig + delta
+                context.workspace.status_text_set(f'Start Vert {idx}  Δ {delta:+.3f} m    |  {hint}')
+            elif mode in ('VERT_E0', 'VERT_E1', 'VERT_E2', 'VERT_E3'):
+                idx = int(mode[-1])
+                key = f'fbxmt_par_ve{idx}'
+                orig = self._orig_verts.get(key, 0.0)
+                obj  = bpy.data.objects.get(self._obj_name)
+                if obj:
+                    obj[key] = orig + delta
+                context.workspace.status_text_set(f'End Vert {idx}  Δ {delta:+.3f} m    |  {hint}')
+
+            # Cursor wrap
+            if wx < margin:
+                new_x = win.width - margin - 1
+                context.window.cursor_warp(new_x, wy)
+                self._last_x, self._last_y = new_x, wy
+            elif wx > win.width - margin:
+                new_x = margin + 1
+                context.window.cursor_warp(new_x, wy)
+                self._last_x, self._last_y = new_x, wy
+            else:
+                self._last_x, self._last_y = wx, wy
 
             for area in context.screen.areas:
                 if area.type == 'VIEW_3D':
@@ -2564,53 +2833,157 @@ class OT_FBXMT_Parallel_Beam_Gizmo_Drag(bpy.types.Operator):
             obj = bpy.data.objects.get(self._obj_name)
             if obj:
                 props = context.scene.fbxmt_props
-                if self.mode in ('SPAN_INSET_START', 'SPAN_INSET_END'):
-                    # Span inset changes which beams exist — full regeneration
-                    if obj.type == 'EMPTY' and obj.get('fbxmt_par_group'):
-                        _par_regen_group(context, obj, props)
-                    elif obj.get('fbxmt_par_group_empty'):
-                        grp = bpy.data.objects.get(obj['fbxmt_par_group_empty'])
-                        if grp:
-                            _par_regen_group(context, grp, props)
-                elif self.mode in ('OFFSET_V_UP', 'OFFSET_V_DOWN'):
-                    # Vertical offset — just rebuild each child beam mesh in place
-                    if obj.type == 'EMPTY' and obj.get('fbxmt_par_group'):
-                        children = [o for o in bpy.data.objects
-                                    if o.get('fbxmt_par_group_empty') == obj.name]
-                        for child in children:
-                            _par_build_mesh(child, props)
-                            for mod in child.modifiers:
-                                if mod.type == 'BOOLEAN':
-                                    mod.show_viewport = True
-                    else:
-                        _par_build_mesh(obj, props)
-                        for mod in obj.modifiers:
-                            if mod.name in self._bool_states:
-                                mod.show_viewport = self._bool_states[mod.name]
-                else:
-                    _par_build_mesh(obj, props)
-                    for mod in obj.modifiers:
-                        if mod.name in self._bool_states:
-                            mod.show_viewport = self._bool_states[mod.name]
+                self._rebuild(context, obj, props)
+            context.workspace.status_text_set(None)
+            context.window.cursor_modal_restore()
             return {'FINISHED'}
 
         elif event.type in ('RIGHTMOUSE', 'ESC'):
             props = context.scene.fbxmt_props
-            props.par_overrun_start = self._orig_os
-            props.par_overrun_end   = self._orig_oe
-            props.par_inset_start   = self._orig_is
-            props.par_inset_end     = self._orig_ie
-            props.par_offset_v      = self._orig_ov
-            props.par_offset_lat    = self._orig_ol
+            props.par_overrun_start             = self._orig_os
+            props.par_overrun_end               = self._orig_oe
+            props.par_inset_start               = self._orig_is
+            props.par_inset_end                 = self._orig_ie
+            props.par_endpoint_inset_start      = getattr(self, '_orig_ep_is', props.par_endpoint_inset_start)
+            props.par_endpoint_inset_end        = getattr(self, '_orig_ep_ie', props.par_endpoint_inset_end)
+            props.par_offset_v                  = self._orig_ov
+            props.par_offset_lat                = self._orig_ol
+            # Restore per-vert offsets
             obj = bpy.data.objects.get(self._obj_name)
             if obj:
-                _par_build_mesh(obj, props)
-                for mod in obj.modifiers:
-                    if mod.name in self._bool_states:
-                        mod.show_viewport = self._bool_states[mod.name]
+                for k, v in self._orig_verts.items():
+                    obj[k] = v
+            obj = bpy.data.objects.get(self._obj_name)
+            if obj:
+                _par_build_mesh(obj, context.scene.fbxmt_props)
+                self._restore_bools(obj)
+            context.workspace.status_text_set(None)
+            context.window.cursor_modal_restore()
             return {'CANCELLED'}
 
         return {'PASS_THROUGH'}
+
+
+# One concrete class per gizmo mode — bl_idname is the mode baked in.
+class OT_FBXMT_Par_Drag_OverrunStart(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_overrun_start'
+    bl_label      = 'Par Beam Overrun Start'
+    bl_description = 'Drag to adjust how far this beam overruns its start wall'
+    _MODE         = 'OVERRUN_START'
+
+class OT_FBXMT_Par_Drag_OverrunEnd(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_overrun_end'
+    bl_label      = 'Par Beam Overrun End'
+    bl_description = 'Drag to adjust how far this beam overruns its end wall'
+    _MODE         = 'OVERRUN_END'
+
+class OT_FBXMT_Par_Drag_InsetStart(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_inset_start'
+    bl_label      = 'Par Beam Inset Start'
+    bl_description = 'Drag to adjust how far this beam penetrates its start wall'
+    _MODE         = 'INSET_START'
+
+class OT_FBXMT_Par_Drag_InsetEnd(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_inset_end'
+    bl_label      = 'Par Beam Inset End'
+    bl_description = 'Drag to adjust how far this beam penetrates its end wall'
+    _MODE         = 'INSET_END'
+
+class OT_FBXMT_Par_Drag_SpanInsetStart(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_span_inset_start'
+    bl_label      = 'Par Beam Span Inset Start'
+    bl_description = 'Drag to offset the first beam laterally from the span start edge'
+    _MODE         = 'SPAN_INSET_START'
+
+class OT_FBXMT_Par_Drag_SpanInsetEnd(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_span_inset_end'
+    bl_label      = 'Par Beam Span Inset End'
+    bl_description = 'Drag to offset the last beam laterally from the span end edge'
+    _MODE         = 'SPAN_INSET_END'
+
+class OT_FBXMT_Par_Drag_OffsetV(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_offset_v'
+    bl_label      = 'Par Beam Vertical Offset'
+    bl_description = 'Drag to shift all beams in this group vertically'
+    _MODE         = 'OFFSET_V_UP'
+
+class OT_FBXMT_Par_Drag_OffsetLat(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_offset_lat'
+    bl_label      = 'Par Beam Lateral Offset'
+    bl_description = 'Drag to shift this beam laterally within its span'
+    _MODE         = 'OFFSET_LAT_A'
+
+# Per-vert depth gizmo operators (start end v0..v3, end end v0..v3)
+class OT_FBXMT_Par_Drag_VertS0(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_s0'
+    bl_label      = 'Vert Start 0'
+    bl_description = 'Drag to adjust depth of start-end corner v0.  Double-click to reset to 0'
+    _MODE         = 'VERT_S0'
+
+class OT_FBXMT_Par_Drag_VertS1(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_s1'
+    bl_label      = 'Vert Start 1'
+    bl_description = 'Drag to adjust depth of start-end corner v1.  Double-click to reset to 0'
+    _MODE         = 'VERT_S1'
+
+class OT_FBXMT_Par_Drag_VertS2(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_s2'
+    bl_label      = 'Vert Start 2'
+    bl_description = 'Drag to adjust depth of start-end corner v2.  Double-click to reset to 0'
+    _MODE         = 'VERT_S2'
+
+class OT_FBXMT_Par_Drag_VertS3(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_s3'
+    bl_label      = 'Vert Start 3'
+    bl_description = 'Drag to adjust depth of start-end corner v3.  Double-click to reset to 0'
+    _MODE         = 'VERT_S3'
+
+class OT_FBXMT_Par_Drag_VertE0(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_e0'
+    bl_label      = 'Vert End 0'
+    bl_description = 'Drag to adjust depth of end-face corner v0.  Double-click to reset to 0'
+    _MODE         = 'VERT_E0'
+
+class OT_FBXMT_Par_Drag_VertE1(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_e1'
+    bl_label      = 'Vert End 1'
+    bl_description = 'Drag to adjust depth of end-face corner v1.  Double-click to reset to 0'
+    _MODE         = 'VERT_E1'
+
+class OT_FBXMT_Par_Drag_VertE2(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_e2'
+    bl_label      = 'Vert End 2'
+    bl_description = 'Drag to adjust depth of end-face corner v2.  Double-click to reset to 0'
+    _MODE         = 'VERT_E2'
+
+class OT_FBXMT_Par_Drag_VertE3(_ParBeamDragBase, bpy.types.Operator):
+    bl_idname     = 'fbxmt.par_drag_vert_e3'
+    bl_label      = 'Vert End 3'
+    bl_description = 'Drag to adjust depth of end-face corner v3.  Double-click to reset to 0'
+    _MODE         = 'VERT_E3'
+
+
+class OT_FBXMT_Par_VertMode_Toggle(bpy.types.Operator):
+    """Double-click an orange overrun gizmo to reveal per-vert depth gizmos."""
+    bl_idname     = 'fbxmt.par_vert_mode_toggle'
+    bl_label      = 'Toggle Per-Vert Gizmos'
+    bl_description = 'Double-click to show/hide per-vertex depth gizmos on this beam'
+    bl_options    = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.active_object
+        return obj is not None and obj.get('fbxmt_par_start') is not None
+
+    def invoke(self, context, event):
+        obj = context.active_object
+        current = obj.get('fbxmt_par_vert_mode', False)
+        obj['fbxmt_par_vert_mode'] = not current
+        for area in context.screen.areas:
+            if area.type == 'VIEW_3D':
+                area.tag_redraw()
+        return {'FINISHED'}
+
 
 
 def _par_grid_snap(context):
@@ -2650,20 +3023,24 @@ class FBXMT_GGT_ParallelBeam(bpy.types.GizmoGroup):
 
     @staticmethod
     def _mat_from_z(direction, location):
+        """Build a 4x4 matrix with *direction* as the local +Z axis (arrow axis).
+
+        We want the gizmo to appear upright in the viewport, so we use world-Z
+        as the cross-product reference when the arrow direction is horizontal
+        (the common case for span/run arrows).  When direction is near world-Z
+        (vertical arrows) we fall back to world-Y.
+        """
         from mathutils import Matrix, Vector
-        d = Vector(direction).normalized()
-        ref = Vector((0, 0, 1))
-        if abs(d.dot(ref)) > 0.999:
-            ref = Vector((1, 0, 0))
+        d   = Vector(direction).normalized()
+        ref = Vector((0, 1, 0)) if abs(d.dot(Vector((0, 0, 1)))) > 0.99               else Vector((0, 0, 1))
         y = d.cross(ref).normalized()
         x = y.cross(d).normalized()
-        m = Matrix((
+        return Matrix((
             (x.x, y.x, d.x, location.x),
             (x.y, y.y, d.y, location.y),
             (x.z, y.z, d.z, location.z),
             (0,   0,   0,   1),
         ))
-        return m
 
     def setup(self, context):
         def _arrow(color, scale=1.0):
@@ -2687,20 +3064,24 @@ class FBXMT_GGT_ParallelBeam(bpy.types.GizmoGroup):
         # Blue — lateral
         self.gz_la = _arrow((0.2, 0.55, 1.0), 0.8)
         self.gz_lb = _arrow((0.2, 0.55, 1.0), 0.8)
-        op = self.gz_os.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'OVERRUN_START'
-        op = self.gz_oe.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'OVERRUN_END'
-        op = self.gz_is.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'INSET_START'
-        op = self.gz_ie.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'INSET_END'
-        op = self.gz_la.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'OFFSET_LAT_A'
-        op = self.gz_lb.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'OFFSET_LAT_B'
+        # Per-vert depth gizmos — smaller, brighter orange, hidden until vert mode
+        self.gz_vs = [_arrow((1.0, 0.65, 0.1), 0.55) for _ in range(4)]
+        self.gz_ve = [_arrow((1.0, 0.65, 0.1), 0.55) for _ in range(4)]
+
+        self.gz_os.target_set_operator('fbxmt.par_drag_overrun_start')
+        self.gz_oe.target_set_operator('fbxmt.par_drag_overrun_end')
+        self.gz_is.target_set_operator('fbxmt.par_drag_inset_start')
+        self.gz_ie.target_set_operator('fbxmt.par_drag_inset_end')
+        self.gz_la.target_set_operator('fbxmt.par_drag_offset_lat')
+        self.gz_lb.target_set_operator('fbxmt.par_drag_offset_lat')
+        for i, gz in enumerate(self.gz_vs):
+            gz.target_set_operator(f'fbxmt.par_drag_vert_s{i}')
+        for i, gz in enumerate(self.gz_ve):
+            gz.target_set_operator(f'fbxmt.par_drag_vert_e{i}')
 
     def draw_prepare(self, context):
+        if not hasattr(self, 'gz_os'):
+            return
         obj = context.active_object
         if obj is None or obj.get('fbxmt_par_start') is None:
             return
@@ -2710,8 +3091,10 @@ class FBXMT_GGT_ParallelBeam(bpy.types.GizmoGroup):
             return Vector(raw) if raw else None
 
         props   = context.scene.fbxmt_props
-        start   = _vec(obj.get('fbxmt_par_start'))
-        end     = _vec(obj.get('fbxmt_par_end'))
+        # Use immutable wall anchors for gizmo positioning so they always
+        # return to the correct resting spot after a drag.
+        start   = _vec(obj.get('fbxmt_par_wall_start') or obj.get('fbxmt_par_start'))
+        end     = _vec(obj.get('fbxmt_par_wall_end')   or obj.get('fbxmt_par_end'))
         t_dir   = _vec(obj.get('fbxmt_par_t_dir'))
         lat_dir = _vec(obj.get('fbxmt_par_lat_dir'))
         if not all([start, end, t_dir, lat_dir]):
@@ -2739,8 +3122,8 @@ class FBXMT_GGT_ParallelBeam(bpy.types.GizmoGroup):
         end_face   = end   + v_shift + lat_shift
 
         # Span inset gizmos — sit at chain extremities offset inward by inset amount
-        self.gz_os.matrix_basis = mf(-t_dir,   start_tip)
-        self.gz_oe.matrix_basis = mf( t_dir,   end_tip)
+        self.gz_os.matrix_basis = mf(-t_dir,   start_face)
+        self.gz_oe.matrix_basis = mf( t_dir,   end_face)
         self.gz_is.matrix_basis = mf( t_dir,   start_face)
         self.gz_ie.matrix_basis = mf(-t_dir,   end_face)
 
@@ -2754,6 +3137,42 @@ class FBXMT_GGT_ParallelBeam(bpy.types.GizmoGroup):
         if show_lat:
             self.gz_la.matrix_basis = mf( lat_dir, mid)
             self.gz_lb.matrix_basis = mf(-lat_dir, mid)
+
+        # Per-vert gizmos — shown only when fbxmt_par_vert_mode is True
+        vert_mode = bool(obj.get('fbxmt_par_vert_mode', False))
+        world_up  = Vector((0, 0, 1))
+        h_arm     = t_dir.cross(world_up)
+        if h_arm.length < 1e-6:
+            h_arm = t_dir.cross(Vector((0, 1, 0)))
+        h_arm      = h_arm.normalized()
+        wall_down  = -world_up
+        depth      = getattr(props, 'coving_depth',     0.1)
+        thickness  = getattr(props, 'coving_thickness', 0.1)
+        c_off      = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
+
+        def _vert_pos(base, offsets, axis_dir, idx):
+            A  = base - c_off
+            ring = [
+                A.copy(),
+                A + h_arm * thickness,
+                A + h_arm * thickness + wall_down * depth,
+                A + wall_down * depth,
+            ]
+            return ring[idx] + axis_dir * offsets[idx]
+
+        s_offsets = [obj.get(f'fbxmt_par_vs{i}', 0.0) for i in range(4)]
+        e_offsets = [obj.get(f'fbxmt_par_ve{i}', 0.0) for i in range(4)]
+
+        for i, gz in enumerate(self.gz_vs):
+            gz.hide = not vert_mode
+            if vert_mode:
+                pos = _vert_pos(start_face, s_offsets, -t_dir, i)
+                gz.matrix_basis = mf(-t_dir, pos)
+        for i, gz in enumerate(self.gz_ve):
+            gz.hide = not vert_mode
+            if vert_mode:
+                pos = _vert_pos(end_face, e_offsets, t_dir, i)
+                gz.matrix_basis = mf(t_dir, pos)
 
 
 # ---------------------------------------------------------------------------
@@ -2777,11 +3196,14 @@ class FBXMT_GGT_ParallelGroup(bpy.types.GizmoGroup):
 
     @staticmethod
     def _mat_from_z(direction, location):
+        """Build a 4x4 matrix with *direction* as the local +Z axis (arrow axis).
+
+        Uses world-Z as the up reference for horizontal arrows (span gizmos)
+        and world-Y for vertical arrows, matching QuickBeam/DihedralBeam.
+        """
         from mathutils import Matrix, Vector
-        d = Vector(direction).normalized()
-        ref = Vector((0, 0, 1))
-        if abs(d.dot(ref)) > 0.999:
-            ref = Vector((1, 0, 0))
+        d   = Vector(direction).normalized()
+        ref = Vector((0, 1, 0)) if abs(d.dot(Vector((0, 0, 1)))) > 0.99               else Vector((0, 0, 1))
         y = d.cross(ref).normalized()
         x = y.cross(d).normalized()
         return Matrix((
@@ -2807,21 +3229,19 @@ class FBXMT_GGT_ParallelGroup(bpy.types.GizmoGroup):
         # White — span inset at chain extremities
         self.gz_ss = _arrow((0.9, 0.9, 0.9))
         self.gz_se = _arrow((0.9, 0.9, 0.9))
-        # Green — vertical offset (double cone at face mid)
-        self.gz_vu = _arrow((0.2, 0.85, 0.35), 0.8)
-        self.gz_vd = _arrow((0.2, 0.85, 0.35), 0.8)
+        # Green — vertical offset (taller arrows, offset from span gizmos)
+        self.gz_vu = _arrow((0.2, 0.85, 0.35), 1.1)
+        self.gz_vd = _arrow((0.2, 0.85, 0.35), 1.1)
 
-        op = self.gz_ss.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'SPAN_INSET_START'
-        op = self.gz_se.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'SPAN_INSET_END'
-        op = self.gz_vu.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'OFFSET_V_UP'
-        op = self.gz_vd.target_set_operator('fbxmt.parallel_beam_gizmo_drag')
-        op.mode = 'OFFSET_V_DOWN'
+        self.gz_ss.target_set_operator('fbxmt.par_drag_span_inset_start')
+        self.gz_se.target_set_operator('fbxmt.par_drag_span_inset_end')
+        self.gz_vu.target_set_operator('fbxmt.par_drag_offset_v')
+        self.gz_vd.target_set_operator('fbxmt.par_drag_offset_v')
 
 
     def draw_prepare(self, context):
+        if not hasattr(self, 'gz_ss'):
+            return
         obj = context.active_object
         if obj is None or not obj.get('fbxmt_par_group'):
             return
@@ -2858,9 +3278,18 @@ class FBXMT_GGT_ParallelGroup(bpy.types.GizmoGroup):
         # White span inset gizmos point along span_dir (beam-spacing direction)
         self.gz_ss.matrix_basis = mf( span_dir, ss_pos)
         self.gz_se.matrix_basis = mf(-span_dir, se_pos)
-        # Green vertical gizmos at face midpoint
-        self.gz_vu.matrix_basis = mf( up, face_mid)
-        self.gz_vd.matrix_basis = mf(-up, face_mid)
+        # Green vertical gizmos — offset perpendicular to span_dir (along t_dir if
+        # available, otherwise a fixed world offset) so they never colocate with the
+        # span gizmos when face_mid == ss_pos == se_pos (degenerate span case).
+        t_dir_raw = obj.get('fbxmt_par_t_dir')
+        if t_dir_raw:
+            from mathutils import Vector as _V
+            t_off = _V(t_dir_raw).normalized() * 0.18
+        else:
+            t_off = Vector((0.0, 0.0, 0.0))
+        v_mid = face_mid + t_off
+        self.gz_vu.matrix_basis = mf( up, v_mid)
+        self.gz_vd.matrix_basis = mf(-up, v_mid)
 
 
 # ---------------------------------------------------------------------------

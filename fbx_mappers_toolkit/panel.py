@@ -267,6 +267,41 @@ class FBXMT_PT_Materials(Panel):
         detect_row.operator("fbxmt.auto_detect_wall_islands", text="Auto-Detect Wall Islands", icon="MOD_MESHDEFORM")
 
 
+# ─── Curve Cleaner ────────────────────────────────────────────────────────────
+
+class FBXMT_PT_CurveCleaner(Panel):
+    bl_space_type  = "VIEW_3D"
+    bl_region_type = "UI"
+    bl_label       = "Curve Cleaner"
+    bl_category    = "FBX Toolkit"
+    bl_order       = 1
+    bl_options     = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Resample selected edge/vert chain", icon='MOD_SMOOTH')
+        layout.label(text="to evenly-spaced Catmull-Rom positions.")
+        layout.separator(factor=0.5)
+
+        sm = context.tool_settings.mesh_select_mode if context.mode == 'EDIT_MESH' else None
+        if sm is not None:
+            if sm[0] and not sm[1] and not sm[2]:
+                layout.label(text="Mode: Vert select", icon='VERTEXSEL')
+            elif sm[1] and not sm[0] and not sm[2]:
+                layout.label(text="Mode: Edge select", icon='EDGESEL')
+            else:
+                row = layout.row()
+                row.alert = True
+                row.label(text="Switch to Vert or Edge select mode", icon='ERROR')
+        else:
+            layout.label(text="Enter Edit Mode to use", icon='INFO')
+
+        layout.separator(factor=0.5)
+        row = layout.row()
+        row.scale_y = 1.6
+        row.operator("fbxmt.curve_cleaner", text="Clean Curve", icon="OUTLINER_OB_CURVES")
+
+
 # ─── Import ───────────────────────────────────────────────────────────────────
 
 class FBXMT_PT_Import(Panel):
@@ -275,7 +310,7 @@ class FBXMT_PT_Import(Panel):
     bl_label       = "Import"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 1
+    bl_order       = 2
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -302,7 +337,7 @@ class FBXMT_PT_UVUnwrap(Panel):
     bl_label       = "UV Maps & Unwrap"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 2
+    bl_order       = 3
 
     def draw(self, context):
         layout = self.layout
@@ -372,7 +407,7 @@ class FBXMT_PT_Export(Panel):
     bl_label       = "Export"
     bl_category    = "FBX Toolkit"
     bl_parent_id   = "FBXMT_PT_Main"
-    bl_order       = 4
+    bl_order       = 5
     bl_options     = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
@@ -524,274 +559,4 @@ class FBXMT_PT_TrimGen2(Panel):
                      text='Generate Trim',
                      icon='MOD_SOLIDIFY')
 
-
-# ---------------------------------------------------------------------------
-# Ceiling Deco panel
-
-class FBXMT_PT_CeilingDeco(Panel):
-    bl_space_type  = "VIEW_3D"
-    bl_region_type = "UI"
-    bl_label       = "Ceiling Deco"
-    bl_category    = "FBXMT Trim"
-    bl_parent_id   = "FBXMT_PT_TrimMain"
-    bl_order       = 1
-    bl_options     = {'DEFAULT_CLOSED'}
-
-    def draw(self, context):
-        layout  = self.layout
-        props   = context.scene.fbxmt_props
-        in_edit = context.mode == 'EDIT_MESH'
-        in_obj  = context.mode == 'OBJECT'
-
-        # ── Clear Empties ─────────────────────────────────────────────────────
-        row = layout.row()
-        row.enabled = in_obj
-        row.menu('FBXMT_MT_ClearEmpties', text='Clear Empties', icon='TRASH')
-
-        layout.separator()
-        box = layout.box()
-        box.label(text='Profile (Coving, Parallel & Spoke)', icon='EDGESEL')
-        col = box.column(align=True)
-        col.prop(props, 'coving_depth',     text='Depth (V)')
-        col.prop(props, 'coving_thickness', text='Thickness (H)')
-        col.prop(props, 'coving_notch_v',   text='Notch V')
-        col.prop(props, 'coving_notch_h',   text='Notch H')
-
-        layout.separator()
-
-        # ── Generate Coving ───────────────────────────────────────────────────
-        box_cov = layout.box()
-        box_cov.label(text='Coving', icon='MOD_SOLIDIFY')
-        if not in_edit:
-            c = box_cov.column()
-            c.label(text='Enter Edit Mode and', icon='INFO')
-            c.label(text='select ceiling/wall seam edges.')
-        row = box_cov.row()
-        row.scale_y = 1.4
-        row.enabled = in_edit
-        row.operator('fbxmt.generate_coving',
-                     text='Generate Coving', icon='MOD_SOLIDIFY')
-
-        layout.separator()
-
-        # ── Quick Beam ────────────────────────────────────────────────────────
-        box_qb = layout.box()
-        box_qb.label(text='Quick Beam', icon='LIGHT_SUN')
-
-        # Detect whether a QuickBeam object is the active selection
-        active_obj    = context.active_object
-        is_quick_beam = (active_obj is not None
-                         and active_obj.type == 'MESH'
-                         and active_obj.get('fbxmt_qb_anchors') is not None)
-
-        if is_quick_beam:
-            # Live adjustment controls — gizmo arrows mirror these props
-            col_qb = box_qb.column(align=True)
-            col_qb.label(text='Use gizmos to adjust overrun', icon='INFO')
-            col_qb.prop(props, 'qb_offset_v', text='Vert Offset')
-            col_qb.separator()
-            row_ref = col_qb.row()
-            row_ref.scale_y = 1.3
-            row_ref.operator('fbxmt.quick_beam_refresh',
-                             text='Rebuild Beam', icon='FILE_REFRESH')
-            col_qb.separator()
-            col_qb.label(text='Or drag the blue/green gizmo', icon='GIZMO')
-            col_qb.label(text='arrows in the viewport.', icon='BLANK1')
-            col_qb.separator()
-
-        col_qb = box_qb.column()
-        if not is_quick_beam:
-            col_qb.label(text='Select 2 verts/edges/faces,', icon='INFO')
-            col_qb.label(text='then generate a beam between them.', icon='BLANK1')
-        row_qb = box_qb.row()
-        row_qb.scale_y = 1.4
-        row_qb.enabled = in_edit
-        row_qb.operator('fbxmt.quick_beam',
-                        text='New Quick Beam' if is_quick_beam else 'Quick Beam',
-                        icon='LIGHT_SUN')
-
-        layout.separator()
-
-        # ── Dihedral Beam ─────────────────────────────────────────────────────
-        box_dh = layout.box()
-        box_dh.label(text='Dihedral Beam', icon='MOD_EDGESPLIT')
-
-        # Detect any dh_NNN_1 anchor empties in the scene
-        is_dih_beam = any(
-            o.type == 'EMPTY'
-            and o.name.startswith('dh_')
-            and o.name.rsplit('_', 1)[-1] == '1'
-            for o in bpy.data.objects
-        )
-
-        # Props always visible — set before generation
-        col_dh = box_dh.column(align=True)
-        # Overrun adjusted via gizmos on generated beam
-        col_dh.label(text='Use gizmos to adjust overrun', icon='INFO')
-
-        if is_dih_beam:
-            col_dh.separator()
-            row_ref = col_dh.row()
-            row_ref.scale_y = 1.3
-            row_ref.operator('fbxmt.dihedral_beam_refresh',
-                             text='Rebuild Beam', icon='FILE_REFRESH')
-            col_dh.separator()
-            col_dh.label(text='Orange arrows = overrun,', icon='GIZMO')
-            col_dh.label(text='green arrow = bisector offset.', icon='BLANK1')
-
-        col_dh.separator()
-        col_dh2 = box_dh.column()
-        if not is_dih_beam:
-            col_dh2.label(text='Edge Select Mode: select 1 edge', icon='INFO')
-            col_dh2.label(text='with 2 adjacent faces.', icon='BLANK1')
-
-        row_place = box_dh.row()
-        row_place.scale_y = 1.4
-        row_place.enabled = in_edit
-        row_place.operator('fbxmt.place_dihedral',
-                           text='Place Dihedral', icon='MOD_EDGESPLIT')
-
-        try:
-            from .beam_placement import _next_index
-            n_dh = _next_index('dh') - 1
-            if n_dh > 0:
-                box_dh.label(text=f'{n_dh} anchor(s) in scene', icon='CHECKMARK')
-        except Exception:
-            pass
-
-        row_dh_prev = box_dh.row()
-        row_dh_prev.operator('fbxmt.preview_dihedral_ray',
-                             text='Preview Ray', icon='HIDE_OFF')
-
-        row2 = box_dh.row(align=True)
-        row2.enabled = in_obj
-        row2.operator('fbxmt.generate_dihedral',
-                      text='Generate Dihedral', icon='MESH_CUBE')
-        row2.alert = True
-        row2.operator('fbxmt.clear_dihedral', text='', icon='X')
-        row2.alert = False
-
-        layout.separator()
-
-        # ── Parallel Beams ────────────────────────────────────────────────────
-        box_par = layout.box()
-        box_par.label(text='Parallel Beams', icon='SNAP_EDGE')
-        col = box_par.column(align=True)
-        row_count = col.row()
-        row_count.enabled = props.par_spacing == 0.0
-        row_count.prop(props, 'par_count',   text='Count')
-        row_spac = col.row()
-        row_spac.enabled = True
-        row_spac.prop(props, 'par_spacing',  text='Spacing')
-        col.prop(props, 'par_inset_start',   text='Inset Start')
-        col.prop(props, 'par_inset_end',     text='Inset End')
-        col.prop(props, 'par_offset_v',      text='Vert Offset')
-
-
-        try:
-            from .ceiling_deco import _get_empties_by_prefix
-            n_par = len(_get_empties_by_prefix('par'))
-            if n_par:
-                box_par.label(text=f'{n_par} pair(s) in scene', icon='CHECKMARK')
-        except Exception:
-            pass
-
-        if not in_edit:
-            c = box_par.column()
-            c.label(text='Enter Edit Mode, select', icon='INFO')
-            c.label(text='one face strip, then place.')
-
-        row = box_par.row(align=True)
-        row.scale_y = 1.2
-        row.enabled = in_edit
-        row.operator('fbxmt.place_parallel',
-                     text='Place Parallel', icon='SNAP_EDGE')
-
-        row_prev = box_par.row()
-        row_prev.operator('fbxmt.preview_parallel_rays',
-                          text='Preview Rays', icon='HIDE_OFF')
-
-        row2 = box_par.row(align=True)
-        row2.enabled = in_obj
-        row2.operator('fbxmt.generate_parallel',
-                      text='Generate Parallel', icon='MESH_CUBE')
-        row2.alert = True
-        row2.operator('fbxmt.clear_parallel',
-                      text='', icon='X')
-        row2.alert = False
-
-        layout.separator()
-
-        # ── Spoke Beams ───────────────────────────────────────────────────────
-        box_spk = layout.box()
-        box_spk.label(text='Spoke Beams', icon='PIVOT_CURSOR')
-        col = box_spk.column(align=True)
-        col.prop(props, 'spk_count',    text='Count')
-        col.prop(props, 'spk_spacing',  text='Spacing')
-        col.prop(props, 'spk_offset_v', text='Vert Offset')
-        col.prop(props, 'spk_length',   text='Spoke Length')
-        sub = col.row()
-        sub.enabled = props.spk_length > 0.0
-        sub.prop(props, 'spk_both_ends', text='Grow From Both Ends')
-
-        if not in_edit:
-            c = box_spk.column()
-            c.label(text='Enter Edit Mode, select', icon='INFO')
-            c.label(text='two face groups, then generate.', icon='BLANK1')
-
-        row = box_spk.row(align=True)
-        row.scale_y = 1.4
-        row.enabled = in_edit
-        row.operator('fbxmt.place_spokes',
-                     text='Generate Spokes', icon='PIVOT_CURSOR')
-        row.alert = True
-        row.operator('fbxmt.clear_spokes', text='', icon='X')
-        row.alert = False
-
-        layout.separator()
-
-        # ── Curve Beams ───────────────────────────────────────────────────────
-        box_crv = layout.box()
-        box_crv.label(text='Curve Beams', icon='CURVE_PATH')
-        col = box_crv.column(align=True)
-        col.prop(props, 'crv_offset_v',    text='Vert Offset')
-        col.prop(props, 'crv_end_offset',  text='End Offset')
-        col.prop(props, 'crv_inset_start', text='Inset Start')
-        col.prop(props, 'crv_inset_end',   text='Inset End')
-        col.separator()
-        col.prop(props, 'crv_depth',       text='Depth (V)')
-        col.prop(props, 'crv_thickness',   text='Thickness (H)')
-
-        if not in_edit:
-            c = box_crv.column()
-            c.label(text='Select strip + strip or strip + face,', icon='INFO')
-            c.label(text='then Place. Inspect empties, then Generate.', icon='BLANK1')
-
-        # Count existing crv empties
-        n_crv = sum(1 for o in bpy.data.objects
-                    if o.type == 'EMPTY' and o.name.startswith('crv_')
-                    and o.name.rsplit('_', 1)[-1] == '1')
-        if n_crv:
-            box_crv.label(text=f'{n_crv} crv empty/empties in scene', icon='CHECKMARK')
-
-        row_place = box_crv.row()
-        row_place.scale_y = 1.4
-        row_place.enabled = in_edit
-        row_place.operator('fbxmt.place_curve',
-                           text='Place Curve', icon='CURVE_PATH')
-
-        row2 = box_crv.row(align=True)
-        row2.enabled = in_obj
-        row2.operator('fbxmt.generate_curve',
-                      text='Generate Curve', icon='MESH_CUBE')
-        row2.alert = True
-        row2.operator('fbxmt.clear_curve', text='', icon='X')
-        row2.alert = False
-
-        layout.separator()
-        box_dbg = layout.box()
-        box_dbg.label(text='Debug', icon='CONSOLE')
-        box_dbg.prop(props, 'beam_debug', text='Debug Mode')
-        if props.beam_debug:
-            box_dbg.label(text='Full console output on generate.', icon='INFO')
 

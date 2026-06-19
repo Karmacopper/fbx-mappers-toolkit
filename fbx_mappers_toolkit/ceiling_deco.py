@@ -19,7 +19,7 @@ del _sys
 #                    ceiling face in height.  At plan corners _plane_intersect
 #                    miters in XY only.
 #
-#   v2  notch      — v1 moved `notch_frac × thickness` in the wall-down
+#   v2  inner corner — v1 + depth along wall_down (with optional chamfer)
 #                    direction (world −Z).  Creates the shadow groove between
 #                    the ceiling cover and wall cover.
 #
@@ -372,20 +372,15 @@ def _edge_arms(edge, T, normal_mat, seam_centroid_local=None, face_normals=None)
 def _coving_ring(seam_co, seam_z,
                  h_arm_in, h_arm_out,
                  wall_down_in, wall_down_out,
-                 depth, thickness, notch_h, notch_v,
+                 depth, thickness,
                  is_start, is_end):
     """Return (v0, v1, v2, v3) for one ring of the coving profile.
 
-    v2 is positioned relative to v1 using notch_h and notch_v as signed
-    blend controls where 0.5 is the neutral/rectangle position:
-
-      v2 = v1 + h_arm    * (2*notch_h - 1) * depth
-              + wall_down * (2*notch_v)     * thickness
-
-    Key values:
-      notch_h=0.5, notch_v=0.5  -> rectangle (v2 at far corner) [default]
-      notch_h=0,   notch_v=0    -> right-angle triangle
-      notch_h=1,   notch_v=1    -> kite
+    Profile:
+        v0  seam (wall/ceiling junction)
+        v1  ceiling arm tip  (thickness along h_arm from seam, locked to seam Z)
+        v2  inner corner     (v1 + depth along wall_down — the hard inner corner)
+        v3  wall foot        (seam + depth along wall_down)
 
     Miter via _plane_intersect for offset legs at interior verts.
     """
@@ -396,38 +391,32 @@ def _coving_ring(seam_co, seam_z,
         wall_down = wall_down_out
         v1_raw = A + h_arm * thickness
         v3_raw = A + wall_down * depth
-        v2_raw = v1_raw + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
     elif is_end:
         h_arm     = h_arm_in
         wall_down = wall_down_in
         v1_raw = A + h_arm * thickness
         v3_raw = A + wall_down * depth
-        v2_raw = v1_raw + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
     else:
-        v1_raw = _plane_intersect(A, h_arm_in,    h_arm_out,    thickness)
-        v3_raw = _plane_intersect(A, wall_down_in, wall_down_out, depth)
+        v1_raw = _plane_intersect(A, h_arm_in,     h_arm_out,     thickness)
+        v3_raw = _plane_intersect(A, wall_down_in,  wall_down_out, depth)
         wd_avg = wall_down_in + wall_down_out
         ha_avg = h_arm_in    + h_arm_out
-        wd = wd_avg.normalized() if wd_avg.length > 1e-6 else wall_down_in
-        ha = ha_avg.normalized() if ha_avg.length > 1e-6 else h_arm_in
-        v2_raw = v1_raw + ha * ((2*notch_h - 1) * thickness) + wd * (2*notch_v * depth)
-        wall_down = wd
-        h_arm     = ha
+        wall_down = wd_avg.normalized() if wd_avg.length > 1e-6 else wall_down_in
+        h_arm     = ha_avg.normalized() if ha_avg.length > 1e-6 else h_arm_in
 
-    # Lock v1 and v2 Z to seam_z — enforces coplanar ceiling leg rule
+    # Lock v1 Z to seam_z — enforces coplanar ceiling leg
     v1 = Vector((v1_raw.x, v1_raw.y, seam_z))
-    # v2 has moved down by wall_down so its Z is NOT seam_z — keep it as computed
-    v2 = v2_raw.copy()
-
+    # v2 is directly below v1 at depth — the hard inner corner
+    v2 = v1 + wall_down * depth
     v0 = A.copy()
     v3 = v3_raw.copy()
 
-    return v0, v1, v2, v3
+    return v0, v1, v2, v3, wall_down, h_arm
 
 # ---------------------------------------------------------------------------
 # Build coving mesh from one chain
 
-def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
+def _build_coving(cov_bm, chain, is_closed, depth, thickness, chamfer='NONE',
                   mat_index=0, normal_mat=None, face_normals=None):
 
     """Sweep 4-vert coving profile along one edge chain."""
@@ -536,6 +525,8 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
 
     v1_pts       = []   # world-space ceiling-miter positions, one per seam vert
     v3_pts       = []   # world-space wall positions, one per seam vert
+    vert_ha      = []   # per-vert averaged h_arm direction
+    vert_wd      = []   # per-vert averaged wall_down direction
     junction_verts = []  # verts where miter arm > 1.1*thickness (collected first pass)
 
     for vi in range(n):
@@ -575,6 +566,11 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
         # Lock v1 Z to seam height (coplanar ceiling rule)
         v1_pts.append(Vector((v1r.x, v1r.y, seam_z)))
         v3_pts.append(v3r)
+        # Store averaged arm directions for chamfer bevel computation
+        vert_ha.append(ha if (is_start or is_end) else
+                       ((ha_in + ha_out).normalized() if (ha_in + ha_out).length > 1e-6 else ha_out))
+        vert_wd.append(wd if (is_start or is_end) else
+                       ((wd_in + wd_out).normalized() if (wd_in + wd_out).length > 1e-6 else wd_out))
         if not (is_start or is_end):
             c_h = ha_in.dot(ha_out)
             # Flag as junction when h_arms differ significantly AND one adjacent
@@ -623,31 +619,18 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
         if len_in > len_out:
             v1_pts[nxt_vi] = Vector(v1_pts[vi])
 
-    # ── Notch (v2) is computed per-strip-face, not per seam-vert ─────────────
-    # v2 sits between v1 and v3 of the same seam vert.
-    # We keep it per-ring (same as before) since it doesn't need to be shared.
-
-    # ── Build strip faces using shared v1 / v3 verts ─────────────────────────
-    # Each seam vert contributes one v0 (seam) and shared v1, v3.
-    # Strip face between verts i and j:
-    #   ceiling quad: v0[i], v1[i], v1[j], v0[j]   (top face of ceiling leg)
-    #   notch  quad:  v1[i], v2[i], v2[j], v1[j]   (chamfer between legs)
-    #   wall   quad:  v2[i], v3[i], v3[j], v2[j]   (wall leg face)
-    #   back   quad:  v3[i], v0[i], v0[j], v3[j]   (back/wall face)
-    # End caps close the open chain ends.
+    # ── v2 inner corner ───────────────────────────────────────────────────────
+    # v2 sits directly below v1 at depth — the hard inner corner.
+    # Chamfer is handled by a bevel modifier applied after mesh creation.
 
     def _v2(vi):
-        """Notch vert for seam vert vi — between v1 and v3."""
-        ha = (edge_h_arms[vi % n_edges] if not ((not is_closed) and vi == n-1)
-              else edge_h_arms[n_edges-1])
-        wd = (edge_wall_downs[vi % n_edges] if not ((not is_closed) and vi == n-1)
-              else edge_wall_downs[n_edges-1])
-        return v1_pts[vi] + ha * ((2*notch_h - 1) * thickness) + wd * (2*notch_v * depth)
+        wd = vert_wd[vi]
+        return v1_pts[vi] + wd * depth
 
     # Create seam verts
     sv_bm = [cov_bm.verts.new(Vector(verts[vi].co)) for vi in range(n)]
 
-    # Build v1_bm sharing BMVerts for snapped (coincident) positions
+    # Build v1_bm sharing BMVerts for snapped positions
     v1_bm = []
     _v1_pos_to_bv = {}
     for vi in range(n):
@@ -672,8 +655,6 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
             bv = cov_bm.verts.new(p)
             _v2_pos_to_bv[k] = bv
             v2_bm.append(bv)
-
-    # Build v3_bm similarly
     v3_bm = []
     _v3_pos_to_bv = {}
     for vi in range(n):
@@ -689,26 +670,19 @@ def _build_coving(cov_bm, chain, is_closed, depth, thickness, notch_h, notch_v,
     loop = range(n) if is_closed else range(n - 1)
     for i in loop:
         j = (i + 1) % n
-        # When ceiling arm is snapped (v1[i]==v1[j]), the ceiling/notch faces
-        # are degenerate — skip them. But wall and back faces are still valid
-        # (v3 is not snapped, just v1).
-        # Skip completely degenerate strips where profile points coincide.
-        # Use position distance checks for all profile levels.
         v1_same = (v1_pts[i] - v1_pts[j]).length < 1e-4
         v3_same = (v3_pts[i] - v3_pts[j]).length < 1e-4
         sv_same = (Vector(verts[i].co) - Vector(verts[j].co)).length < 1e-4
         if v1_same and (v3_same or sv_same):
             continue
-        _face([sv_bm[i], v1_bm[i], v1_bm[j], sv_bm[j]])
-        _face([v1_bm[i], v2_bm[i], v2_bm[j], v1_bm[j]])
-        _face([v2_bm[i], v3_bm[i], v3_bm[j], v2_bm[j]])
-        _face([v3_bm[i], sv_bm[i], sv_bm[j], v3_bm[j]])
+        _face([sv_bm[i],  v1_bm[i],  v1_bm[j],  sv_bm[j]])
+        _face([v1_bm[i],  v2_bm[i],  v2_bm[j],  v1_bm[j]])
+        _face([v2_bm[i],  v3_bm[i],  v3_bm[j],  v2_bm[j]])
+        _face([v3_bm[i],  sv_bm[i],  sv_bm[j],  v3_bm[j]])
 
     if not is_closed and n >= 2:
-        # Start cap
         _face([v2_bm[0],  v1_bm[0],  sv_bm[0]])
         _face([v3_bm[0],  v2_bm[0],  sv_bm[0]])
-        # End cap
         _face([sv_bm[-1], v1_bm[-1], v2_bm[-1]])
         _face([sv_bm[-1], v2_bm[-1], v3_bm[-1]])
 
@@ -741,7 +715,7 @@ def _chain_z_ok(chain, is_closed, eps=Z_NOISE_EPS, normal_mat=None, matrix_world
 
 def _build_beam_oriented(beam_bm, start_co, end_co,
                           h_arm, wall_down,
-                          depth, thickness, notch_h, notch_v,
+                          depth, thickness,
                           mat_index=0):
     """Sweep the C-profile from start_co to end_co using explicit profile axes.
 
@@ -764,7 +738,7 @@ def _build_beam_oriented(beam_bm, start_co, end_co,
         A  = Vector(co) - centre_offset
         v0 = A.copy()
         v1 = A + h_arm * thickness
-        v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
+        v2 = v1 + wall_down * depth
         v3 = A + wall_down * depth
         return v0, v1, v2, v3
 
@@ -793,7 +767,73 @@ def _build_beam_oriented(beam_bm, start_co, end_co,
 
     beam_bm.normal_update()
 
-def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
+def _build_beam_per_vert(beam_bm, start_co, end_co,
+                         depth, thickness,
+                         s_offsets=None, e_offsets=None,
+                         mat_index=0):
+    """Like _build_beam but each of the 4 ring verts at each end can be nudged
+    independently along the beam axis.
+
+    s_offsets / e_offsets — list of 4 floats (v0..v3), positive = further along
+    beam axis (deeper into wall at start end means negative t_dir).  None = all zero.
+    """
+    from mathutils import Vector
+    axis = Vector(end_co) - Vector(start_co)
+    if axis.length < 1e-4:
+        return
+
+    t_dir    = axis.normalized()
+    world_up = Vector((0, 0, 1))
+    h_arm = t_dir.cross(world_up)
+    if h_arm.length < 1e-6:
+        h_arm = t_dir.cross(Vector((0, 1, 0)))
+    h_arm     = h_arm.normalized()
+    wall_down = -world_up
+
+    centre_offset = h_arm * (thickness * 0.5) + wall_down * (depth * 0.5)
+
+    s_off = s_offsets or [0.0, 0.0, 0.0, 0.0]
+    e_off = e_offsets or [0.0, 0.0, 0.0, 0.0]
+
+    def _ring(co, offsets, axis_dir):
+        """axis_dir is the direction a positive offset moves this end's verts."""
+        A  = Vector(co) - centre_offset
+        v0 = A.copy()                               + axis_dir * offsets[0]
+        v1 = A + h_arm * thickness                  + axis_dir * offsets[1]
+        v2 = (A + h_arm * thickness
+                + wall_down * depth)                + axis_dir * offsets[2]
+        v3 = A + wall_down * depth                  + axis_dir * offsets[3]
+        return v0, v1, v2, v3
+
+    # Start end: positive offset moves verts further from beam centre (into wall)
+    ring_s = [beam_bm.verts.new(p) for p in _ring(start_co, s_off, -t_dir)]
+    # End end: positive offset moves verts further from beam centre (into wall)
+    ring_e = [beam_bm.verts.new(p) for p in _ring(end_co,   e_off,  t_dir)]
+
+    STRIPS = [(0, 1), (1, 2), (2, 3), (3, 0)]
+
+    def _face(vlist):
+        try:
+            f = beam_bm.faces.new(vlist)
+            f.material_index = mat_index
+        except Exception:
+            pass
+
+    for a, b in STRIPS:
+        _face([ring_s[a], ring_s[b], ring_e[b], ring_e[a]])
+
+    v0s, v1s, v2s, v3s = ring_s
+    _face([v2s, v1s, v0s])
+    _face([v3s, v2s, v0s])
+
+    v0e, v1e, v2e, v3e = ring_e
+    _face([v0e, v1e, v2e])
+    _face([v0e, v2e, v3e])
+
+    beam_bm.normal_update()
+
+
+def _build_beam(beam_bm, start_co, end_co, depth, thickness,
                 mat_index=0):
     """Sweep coving profile from start_co to end_co using world-up orientation.
 
@@ -815,7 +855,7 @@ def _build_beam(beam_bm, start_co, end_co, depth, thickness, notch_h, notch_v,
 
     _build_beam_oriented(beam_bm, start_co, end_co,
                          h_arm, -world_up,
-                         depth, thickness, notch_h, notch_v,
+                         depth, thickness,
                          mat_index=mat_index)
 
 def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
@@ -833,8 +873,6 @@ def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
         return
 
     world_up = Vector((0, 0, 1))
-    notch_h  = 0.5
-    notch_v  = 0.5
 
     def _tangent(i):
         """Local tangent at ring i — bisector for interior, segment for ends."""
@@ -880,7 +918,7 @@ def _build_curve_beam(bm, ring_positions, depth, thickness, mat_index=0):
         A  = Vector(co) - centre_off
         v0 = A.copy()
         v1 = A + h_arm * t_thick
-        v2 = v1 + h_arm * ((2*notch_h - 1) * t_thick) + wall_down * (2*notch_v * depth)
+        v2 = v1 + wall_down * depth
         v3 = A + wall_down * depth
         return v0, v1, v2, v3
 
@@ -930,8 +968,6 @@ def _build_curve_beam_directed(bm, ring_positions, wall_downs,
     if len(ring_positions) < 2 or len(wall_downs) < len(ring_positions):
         return
 
-    notch_h = 0.5
-    notch_v = 0.5
 
     def _tangent(i):
         n = len(ring_positions)
@@ -954,7 +990,7 @@ def _build_curve_beam_directed(bm, ring_positions, wall_downs,
         A  = Vector(co) - centre_off
         v0 = A.copy()
         v1 = A + h_arm * thickness
-        v2 = v1 + h_arm * ((2*notch_h - 1) * thickness) + wall_down * (2*notch_v * depth)
+        v2 = v1 + wall_down * depth
         v3 = A + wall_down * depth
         return v0, v1, v2, v3
 
@@ -1014,6 +1050,121 @@ def _get_beam_empties(context):
 # ---------------------------------------------------------------------------
 # Operator 1: Generate Coving
 
+def _fbxmt_register_popup_handler(idname):
+    """Register a one-shot SpaceView3D draw handler that invokes a popup operator
+    on the next redraw — guaranteed to have a valid context unlike timers."""
+    import bpy
+    _handle = [None]
+
+    def _draw_cb(*args):
+        import bpy
+        sp = bpy.types.SpaceView3D
+        if _handle[0] is not None:
+            sp.draw_handler_remove(_handle[0], 'WINDOW')
+            _handle[0] = None
+        try:
+            op = getattr(bpy.ops, idname.split('.')[0])
+            op_fn = getattr(op, idname.split('.')[1])
+            op_fn('INVOKE_DEFAULT')
+        except Exception:
+            pass
+
+    _handle[0] = bpy.types.SpaceView3D.draw_handler_add(
+        _draw_cb, (), 'WINDOW', 'POST_PIXEL'
+    )
+    # Force a redraw so the handler fires immediately
+    for area in bpy.context.screen.areas if bpy.context.screen else []:
+        if area.type == 'VIEW_3D':
+            area.tag_redraw()
+            break
+
+
+class OT_FBXMT_Assign_Room_Popup(bpy.types.Operator):
+    """Pop up after coving/beam generation to assign the object to a room collection."""
+    bl_idname   = 'fbxmt.assign_room_popup'
+    bl_label    = 'Assign to Room'
+    bl_options  = {'INTERNAL'}
+
+    room_name: bpy.props.StringProperty(
+        name='Room',
+        description='Name of the room collection (new or existing)',
+        default='',
+    )
+    is_new: bpy.props.BoolProperty(default=False)
+
+    def invoke(self, context, event):
+        from .materials import get_trim_room_names
+        existing = get_trim_room_names()
+        # Pre-fill with source mesh name as default room suggestion
+        src = context.scene.get('_fbxmt_pending_cov_src', '')
+        self.room_name = existing[0] if existing else (src or 'Room_01')
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        from .materials import get_trim_room_names
+        layout = self.layout
+        existing = get_trim_room_names()
+
+        layout.label(text='Assign to room:')
+        if existing:
+            # Show existing rooms as a quick-pick
+            col = layout.column(align=True)
+            for name in existing:
+                op = col.operator('fbxmt.assign_room_pick', text=name,
+                                  icon='COLLECTION_COLOR_01')
+                op.room_name = name
+            layout.separator()
+
+        layout.label(text='New room name:')
+        layout.prop(self, 'room_name', text='')
+        layout.prop(context.scene.fbxmt_props, 'trim_collection_mode', text='Layout')
+
+    def execute(self, context):
+        from .materials import get_room_collection
+        props      = context.scene.fbxmt_props
+        room       = self.room_name.strip() or 'Room_01'
+        cat        = props.trim_collection_mode == 'CATEGORISED'
+        obj_name   = context.scene.get('_fbxmt_pending_cov_obj', '')
+        obj        = bpy.data.objects.get(obj_name)
+        if obj:
+            target = get_room_collection(room, categorised=cat, category='Coving')
+            # Move from current collection to target
+            for col in list(obj.users_collection):
+                col.objects.unlink(obj)
+            target.objects.link(obj)
+            # Rename object to RoomName.Coving
+            obj.name = f'{room}.Coving'
+        # Clean up temp scene props
+        context.scene.pop('_fbxmt_pending_cov_obj', None)
+        context.scene.pop('_fbxmt_pending_cov_src',  None)
+        return {'FINISHED'}
+
+
+class OT_FBXMT_Assign_Room_Pick(bpy.types.Operator):
+    """Pick an existing room from the list — closes the popup and assigns immediately."""
+    bl_idname  = 'fbxmt.assign_room_pick'
+    bl_label   = 'Pick Room'
+    bl_options = {'INTERNAL'}
+
+    room_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        from .materials import get_room_collection
+        props    = context.scene.fbxmt_props
+        cat      = props.trim_collection_mode == 'CATEGORISED'
+        obj_name = context.scene.get('_fbxmt_pending_cov_obj', '')
+        obj      = bpy.data.objects.get(obj_name)
+        if obj:
+            target = get_room_collection(self.room_name, categorised=cat, category='Coving')
+            for col in list(obj.users_collection):
+                col.objects.unlink(obj)
+            target.objects.link(obj)
+            obj.name = f'{self.room_name}.Coving'
+        context.scene.pop('_fbxmt_pending_cov_obj', None)
+        context.scene.pop('_fbxmt_pending_cov_src',  None)
+        return {'FINISHED'}
+
+
 class OT_FBXMT_Generate_Coving(Operator):
     bl_idname      = 'fbxmt.generate_coving'
     bl_label       = 'Generate Coving'
@@ -1033,8 +1184,6 @@ class OT_FBXMT_Generate_Coving(Operator):
         props     = context.scene.fbxmt_props
         depth     = props.coving_depth
         thickness = props.coving_thickness
-        notch_h   = props.coving_notch_h
-        notch_v   = props.coving_notch_v
 
         # ── Collect edge data from all Edit-Mode objects into plain Python ──
         # We do NOT build topology in bmesh here — vert deduplication across
@@ -1044,7 +1193,8 @@ class OT_FBXMT_Generate_Coving(Operator):
         # Then build world_bm from those records after mode_set, with every
         # edge guaranteed to have its normal stored at the matching index.
 
-        edit_objs = [o for o in context.selected_objects if o.type == 'MESH']
+        edit_objs = list(getattr(context, 'objects_in_mode', None) or
+                         [o for o in context.selected_objects if o.type == 'MESH'])
         if context.active_object and context.active_object not in edit_objs:
             edit_objs.insert(0, context.active_object)
 
@@ -1235,7 +1385,8 @@ class OT_FBXMT_Generate_Coving(Operator):
             cov_bm = bmesh.new()
             for chain, is_closed in zip(valid_chains, valid_closed):
                 _build_coving(cov_bm, chain, is_closed,
-                              depth, thickness, notch_h, notch_v,
+                              depth, thickness,
+                              chamfer=getattr(props, 'coving_chamfer', 'NONE'),
                               mat_index=0, normal_mat=None,
                               face_normals=face_normals_map)
 
@@ -1249,26 +1400,49 @@ class OT_FBXMT_Generate_Coving(Operator):
             # inward-facing normals which break ray-cast based tools
             bpy.ops.object.select_all(action='DESELECT')
             temp_obj = bpy.data.objects.new('_fbxmt_temp_norm', cov_mesh)
-            context.collection.objects.link(temp_obj)
+            context.scene.collection.objects.link(temp_obj)
             context.view_layer.objects.active = temp_obj
             temp_obj.select_set(True)
             bpy.ops.object.mode_set(mode='EDIT')
             bpy.ops.mesh.select_all(action='SELECT')
             bpy.ops.mesh.normals_make_consistent(inside=False)
             bpy.ops.object.mode_set(mode='OBJECT')
-            context.collection.objects.unlink(temp_obj)
+            context.scene.collection.objects.unlink(temp_obj)
             bpy.data.objects.remove(temp_obj, do_unlink=False)
             cov_mesh.update()
 
             cov_obj = bpy.data.objects.new(f'{src_name}{suffix}', cov_mesh)
-            context.collection.objects.link(cov_obj)
-            move_to_collection(cov_obj, COLLECTION_TRIM)
+            context.scene.collection.objects.link(cov_obj)
+
+            # Apply bevel modifier for chamfer if requested
+            chamfer = getattr(props, 'coving_chamfer', 'NONE')
+            if chamfer != 'NONE':
+                bevel_width = min(depth, thickness) * (0.25 if chamfer == 'HALF' else 0.50)
+                context.view_layer.objects.active = cov_obj
+                cov_obj.select_set(True)
+                mod = cov_obj.modifiers.new(name='fbxmt_chamfer', type='BEVEL')
+                mod.width          = bevel_width
+                mod.segments       = 2
+                mod.limit_method   = 'ANGLE'
+                mod.angle_limit    = 0.785398   # 45 degrees in radians
+                mod.profile        = 0.5
+                mod.use_clamp_overlap = True
+                bpy.ops.object.modifier_apply(modifier='fbxmt_chamfer')
+                cov_obj.select_set(False)
+
+            # Store pending assignment for the popup
+            context.scene['_fbxmt_pending_cov_obj'] = cov_obj.name
+            context.scene['_fbxmt_pending_cov_src']  = src_name
+
             world_bm.free()
 
             msg = f'Coving generated ({len(valid_chains)} chain(s))'
             if skipped:
                 msg += f', {skipped} chain(s) skipped (non-planar Z)'
             self.report({'INFO'}, msg)
+
+            # Defer popup until after this operator and its finally block finish
+            _fbxmt_register_popup_handler('fbxmt.assign_room_popup')
             return {'FINISHED'}
 
         finally:
@@ -1402,7 +1576,7 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
         beam_mesh.update()
 
         beam_obj = bpy.data.objects.new(f'{group_name}_Beam', beam_mesh)
-        context.collection.objects.link(beam_obj)
+        context.scene.collection.objects.link(beam_obj)
         generated.append(beam_obj)
 
         # ── Boolean Difference using source mesh stored on empty ──────────
@@ -1446,7 +1620,7 @@ def _generate_beams_from_pairs(context, pairs, depth, thickness,
             bm.free()
             me.update()
             marker_obj = bpy.data.objects.new(marker_name, me)
-            context.collection.objects.link(marker_obj)
+            context.scene.collection.objects.link(marker_obj)
             vert_markers.append(marker_obj)
 
     # ── OBJ export ────────────────────────────────────────────────────────
@@ -1596,7 +1770,7 @@ class OT_FBXMT_Generate_Parallel(Operator):
             beam_mesh.update()
 
             beam_obj = bpy.data.objects.new(f'{group_name}_Beam', beam_mesh)
-            context.collection.objects.link(beam_obj)
+            context.scene.collection.objects.link(beam_obj)
             # Stay in context.collection — gizmos need the beam accessible
             generated.append(beam_obj)
 
@@ -1617,7 +1791,7 @@ class OT_FBXMT_Generate_Parallel(Operator):
                 bm.free()
                 me.update()
                 mo = bpy.data.objects.new(f'{group_name}_marker', me)
-                context.collection.objects.link(mo)
+                context.scene.collection.objects.link(mo)
                 vert_markers.append(mo)
 
             # Boolean trim
@@ -1674,9 +1848,11 @@ class OT_FBXMT_Generate_Parallel(Operator):
                 grp_idx += 1
             grp_name  = f'par_grp_{grp_idx:03d}'
             grp_empty = bpy.data.objects.new(grp_name, None)
-            grp_empty.empty_display_type = 'PLAIN_AXES'
-            grp_empty.empty_display_size = 0.1
-            context.collection.objects.link(grp_empty)
+            grp_empty.empty_display_type = 'SPHERE'
+            grp_empty.empty_display_size = 0.25
+            grp_empty.show_in_front      = True
+            grp_empty.color              = (0.2, 0.8, 1.0, 1.0)  # cyan
+            context.scene.collection.objects.link(grp_empty)
 
             # Position at midpoint of first and last beam origins
             all_starts = [Vector(o['fbxmt_par_start']) for o in generated if o.get('fbxmt_par_start')]
@@ -1755,6 +1931,44 @@ class OT_FBXMT_Generate_Parallel(Operator):
 
         bpy.ops.object.select_all(action='DESELECT')
 
+        # Move all generated beams and group empty to Trim collection
+        for beam in generated:
+            move_to_collection(beam, COLLECTION_TRIM)
+        if grp_empty:
+            move_to_collection(grp_empty, COLLECTION_TRIM)
+
+        # Check if source mesh is already in a Trim room — if so inherit it
+        src_name   = generated[0].get('fbxmt_par_source', '') if generated else ''
+        src_obj    = bpy.data.objects.get(src_name)
+        room_found = None
+        if src_obj:
+            from .materials import get_trim_room_names
+            trim    = bpy.data.collections.get(COLLECTION_TRIM)
+            if trim:
+                for room_col in trim.children:
+                    if any(src_obj.name in [o.name for o in col.all_objects]
+                           for col in [room_col] + list(room_col.children)):
+                        room_found = room_col.name
+                        break
+
+        if room_found:
+            from .materials import get_room_collection
+            props_l = bpy.context.scene.fbxmt_props
+            cat     = props_l.trim_collection_mode == 'CATEGORISED'
+            target  = get_room_collection(room_found, categorised=cat, category='Beams')
+            for beam in generated:
+                move_to_collection(beam, target.name)
+            if grp_empty:
+                move_to_collection(grp_empty, target.name)
+            _rename_beam_objects(room_found, [b.name for b in generated] + ([grp_empty.name] if grp_empty else []))
+        else:
+            pending = [b.name for b in generated]
+            if grp_empty:
+                pending.append(grp_empty.name)
+            bpy.context.scene['_fbxmt_pending_beam_objs'] = pending
+            bpy.context.scene['_fbxmt_pending_beam_src']  = src_name
+            _fbxmt_register_popup_handler('fbxmt.assign_room_beam_popup')
+
         msg = f'{len(generated)} parallel beam(s) generated'
         if skipped:
             msg += f' ({skipped} skipped — check console)'
@@ -1764,6 +1978,103 @@ class OT_FBXMT_Generate_Parallel(Operator):
 
 # ---------------------------------------------------------------------------
 # Operator: Generate Spoke Beams
+
+def _rename_beam_objects(room_name, pending_names):
+    """Rename beam objects and group empty to RoomName.Beam.### / RoomName.Beams"""
+    beams   = []
+    empties = []
+    for n in pending_names:
+        obj = bpy.data.objects.get(n)
+        if obj is None:
+            continue
+        if obj.type == 'EMPTY':
+            empties.append(obj)
+        else:
+            beams.append(obj)
+    for i, e in enumerate(empties):
+        suffix = f'.{i+1:03d}' if len(empties) > 1 else ''
+        e.name = f'{room_name}.Beams{suffix}'
+    for i, b in enumerate(beams):
+        b.name = f'{room_name}.Beam.{i+1:03d}'
+        if b.data:
+            b.data.name = b.name
+
+
+class OT_FBXMT_Assign_Room_Beam_Popup(bpy.types.Operator):
+    """Pop up after beam generation to assign beams to a room collection."""
+    bl_idname  = 'fbxmt.assign_room_beam_popup'
+    bl_label   = 'Assign Beams to Room'
+    bl_options = {'INTERNAL'}
+
+    room_name: bpy.props.StringProperty(name='Room', default='')
+
+    def invoke(self, context, event):
+        from .materials import get_trim_room_names
+        existing  = get_trim_room_names()
+        src       = context.scene.get('_fbxmt_pending_beam_src', '')
+        self.room_name = existing[0] if existing else (src or 'Room_01')
+        return context.window_manager.invoke_props_dialog(self, width=320)
+
+    def draw(self, context):
+        from .materials import get_trim_room_names
+        layout   = self.layout
+        existing = get_trim_room_names()
+        layout.label(text='Assign beams to room:')
+        if existing:
+            col = layout.column(align=True)
+            for name in existing:
+                op = col.operator('fbxmt.assign_room_beam_pick', text=name,
+                                  icon='COLLECTION_COLOR_04')
+                op.room_name = name
+            layout.separator()
+        layout.label(text='New room name:')
+        layout.prop(self, 'room_name', text='')
+        layout.prop(context.scene.fbxmt_props, 'trim_collection_mode', text='Layout')
+
+    def execute(self, context):
+        from .materials import get_room_collection
+        props    = context.scene.fbxmt_props
+        room     = self.room_name.strip() or 'Room_01'
+        cat      = props.trim_collection_mode == 'CATEGORISED'
+        target   = get_room_collection(room, categorised=cat, category='Beams')
+        pending  = context.scene.get('_fbxmt_pending_beam_objs', [])
+        for obj_name in pending:
+            obj = bpy.data.objects.get(obj_name)
+            if obj:
+                for col in list(obj.users_collection):
+                    col.objects.unlink(obj)
+                target.objects.link(obj)
+        _rename_beam_objects(room, pending)
+        context.scene.pop('_fbxmt_pending_beam_objs', None)
+        context.scene.pop('_fbxmt_pending_beam_src',  None)
+        return {'FINISHED'}
+
+
+class OT_FBXMT_Assign_Room_Beam_Pick(bpy.types.Operator):
+    """Pick an existing room for beam assignment."""
+    bl_idname  = 'fbxmt.assign_room_beam_pick'
+    bl_label   = 'Pick Room for Beams'
+    bl_options = {'INTERNAL'}
+
+    room_name: bpy.props.StringProperty()
+
+    def execute(self, context):
+        from .materials import get_room_collection
+        props   = context.scene.fbxmt_props
+        cat     = props.trim_collection_mode == 'CATEGORISED'
+        target  = get_room_collection(self.room_name, categorised=cat, category='Beams')
+        pending = context.scene.get('_fbxmt_pending_beam_objs', [])
+        for obj_name in pending:
+            obj = bpy.data.objects.get(obj_name)
+            if obj:
+                for col in list(obj.users_collection):
+                    col.objects.unlink(obj)
+                target.objects.link(obj)
+        _rename_beam_objects(self.room_name, pending)
+        context.scene.pop('_fbxmt_pending_beam_objs', None)
+        context.scene.pop('_fbxmt_pending_beam_src',  None)
+        return {'FINISHED'}
+
 
 class OT_FBXMT_Generate_Spokes(Operator):
     bl_idname      = 'fbxmt.generate_spokes'
@@ -1889,7 +2200,7 @@ class OT_FBXMT_Generate_Curve(Operator):
         curve_mesh.update()
 
         curve_obj = bpy.data.objects.new('CurveBeam', curve_mesh)
-        context.collection.objects.link(curve_obj)
+        context.scene.collection.objects.link(curve_obj)
         move_to_collection(curve_obj, COLLECTION_TRIM)
 
         # Boolean trim
@@ -1919,7 +2230,7 @@ class OT_FBXMT_Generate_Curve(Operator):
             bm.free()
             me.update()
             mo = bpy.data.objects.new('crv_marker', me)
-            context.collection.objects.link(mo)
+            context.scene.collection.objects.link(mo)
             vert_markers.append(mo)
 
         # OBJ export

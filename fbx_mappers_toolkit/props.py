@@ -107,6 +107,11 @@ class FBXMT_GlobalPrefs(PropertyGroup):
         description="Extend lines along all tile edges (preset 4). Off = short reticle arms (preset 2). Circle always uses preset 2.",
         default=False,
     )
+    show_trim2_hint: bpy.props.BoolProperty(
+        name="Show Trim 2 Hints",
+        description="Show the context hint box in the Trim 2 panel explaining what Width and Height mean for the current operation type",
+        default=True,
+    )
 
     # Base material checker colours — A only. B is always derived via _resolve_color_b.
     # B was previously stored here; those props are removed to prevent stale values
@@ -522,40 +527,41 @@ class FBXMT_Props(PropertyGroup):
     )
 
     # ── Ceiling Deco System ───────────────────────────────────────────────────
+    # Room / collection assignment
+    trim_collection_mode: bpy.props.EnumProperty(
+        name='Collection Layout',
+        description='How generated trim objects are organised under the Trim collection',
+        items=[
+            ('FLAT',        'Flat',        'Trim/George/George.Coving — all objects in the room collection'),
+            ('CATEGORISED', 'Categorised', 'Trim/George/Coving/George.Coving — objects in typed sub-collections'),
+        ],
+        default='FLAT',
+    )
+
     # Coving + Beam Generation.  depth/thickness are shared between both
     # operators so coving and beam ends use identical cross-sections.
 
     coving_depth: bpy.props.FloatProperty(
         name='Depth',
-        description='How far the coving/beam profile extends DOWN the wall surface from the seam',
-        default=0.25, min=0.001, max=5.0,
+        description='How far the coving profile extends DOWN the wall surface from the seam',
+        default=0.12, min=0.001, max=5.0,
         unit='LENGTH', step=1, precision=3,
     )
     coving_thickness: bpy.props.FloatProperty(
         name='Thickness',
-        description='How far the coving/beam profile extends AWAY from the wall along the ceiling',
-        default=0.15, min=0.001, max=5.0,
+        description='How far the coving profile extends AWAY from the wall along the ceiling',
+        default=0.25, min=0.001, max=5.0,
         unit='LENGTH', step=1, precision=3,
     )
-    coving_notch_h: bpy.props.FloatProperty(
-        name='Notch H',
-        description=(
-            'Horizontal notch — pulls v2 back from the far corner along h_arm '
-            'as a fraction of depth. '
-            '0.5+0.5 = rectangle, 0+0 = right-angle triangle, 1+1 = kite'
-        ),
-        default=0.5, min=0.0, max=1.0,
-        step=1, precision=3,
-    )
-    coving_notch_v: bpy.props.FloatProperty(
-        name='Notch V',
-        description=(
-            'Vertical notch — pulls v2 back from the far corner along wall_down '
-            'as a fraction of thickness. '
-            '0.5+0.5 = rectangle, 0+0 = right-angle triangle, 1+1 = kite'
-        ),
-        default=0.5, min=0.0, max=1.0,
-        step=1, precision=3,
+    coving_chamfer: bpy.props.EnumProperty(
+        name='Chamfer',
+        description='Bevel the inner corner of the coving profile',
+        items=[
+            ('NONE', 'None', 'Sharp inner corner'),
+            ('HALF', 'Half', 'Small chamfer bevel at inner corner'),
+            ('FULL', 'Full', 'Larger chamfer bevel at inner corner'),
+        ],
+        default='NONE',
     )
 
     # ── Quick Beam gizmo props ────────────────────────────────────────────────
@@ -682,6 +688,21 @@ class FBXMT_Props(PropertyGroup):
         default=0.0, min=-10.0, max=10.0,
         unit='LENGTH', step=1, precision=3,
         update=_par_prop_update,
+    )
+    # Endpoint inset — gizmo-controlled, how far each beam end pulls back
+    # from its stored wall-surface anchor along the beam axis.
+    # Named distinctly to avoid collision with the lateral span inset above.
+    par_endpoint_inset_start: bpy.props.FloatProperty(
+        name='Endpoint Inset Start',
+        description='Pull the start end of each beam back from the wall anchor (along beam axis)',
+        default=0.0, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
+    )
+    par_endpoint_inset_end: bpy.props.FloatProperty(
+        name='Endpoint Inset End',
+        description='Pull the end of each beam back from the opposite wall anchor (along beam axis)',
+        default=0.0, min=0.0, max=5.0,
+        unit='LENGTH', step=1, precision=3,
     )
     par_inset: bpy.props.FloatProperty(
         name='Inset',

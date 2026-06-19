@@ -1004,12 +1004,68 @@ def ensure_collections():
 
 
 def move_to_collection(obj, collection_name):
+    """Move obj to the named collection, creating and linking it to the scene if needed."""
     target = bpy.data.collections.get(collection_name)
     if not target:
-        return
+        target = bpy.data.collections.new(collection_name)
+        bpy.context.scene.collection.children.link(target)
+    # Ensure the collection is actually in the scene (may exist but be unlinked)
+    def _is_in_scene(col, scene_col):
+        if col.name == scene_col.name:
+            return True
+        for child in scene_col.children_recursive if hasattr(scene_col, 'children_recursive') else []:
+            if child.name == col.name:
+                return True
+        # Simple check via all scene collections
+        return col.name in [c.name for c in bpy.context.scene.collection.children_recursive]
+    if not _is_in_scene(target, bpy.context.scene.collection):
+        bpy.context.scene.collection.children.link(target)
     for col in list(obj.users_collection):
         col.objects.unlink(obj)
     target.objects.link(obj)
+
+
+def get_trim_room_names():
+    """Return sorted list of room names that are direct children of the Trim collection."""
+    trim = bpy.data.collections.get(COLLECTION_TRIM)
+    if not trim:
+        return []
+    return sorted(c.name for c in trim.children)
+
+
+def get_room_collection(room_name, categorised=False, category='Coving'):
+    """Find or create Trim/room_name and optionally Trim/room_name/category.
+
+    Returns the target collection the object should be placed in.
+    """
+    scene = bpy.context.scene
+
+    # Ensure Trim root exists
+    trim = bpy.data.collections.get(COLLECTION_TRIM)
+    if not trim:
+        trim = bpy.data.collections.new(COLLECTION_TRIM)
+        scene.collection.children.link(trim)
+
+    # Ensure room sub-collection
+    room_col = bpy.data.collections.get(room_name)
+    if room_col is None or room_col not in list(trim.children):
+        if room_col is None:
+            room_col = bpy.data.collections.new(room_name)
+        if room_col.name not in [c.name for c in trim.children]:
+            trim.children.link(room_col)
+
+    if not categorised:
+        return room_col
+
+    # Ensure category sub-collection under room
+    cat_name   = f'{room_name}.{category}'
+    cat_col    = bpy.data.collections.get(cat_name)
+    if cat_col is None or cat_col not in list(room_col.children):
+        if cat_col is None:
+            cat_col = bpy.data.collections.new(cat_name)
+        if cat_name not in [c.name for c in room_col.children]:
+            room_col.children.link(cat_col)
+    return cat_col
 
 
 def add_fbxmt_slots(obj):

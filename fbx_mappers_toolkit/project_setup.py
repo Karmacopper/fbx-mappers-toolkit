@@ -2694,7 +2694,14 @@ def _on_mat_dropdown_update(scene, _context):
 
 def register():
     for cls in CLASSES:
-        bpy.utils.register_class(cls)
+        try:
+            bpy.utils.register_class(cls)
+        except Exception:
+            try:
+                bpy.utils.unregister_class(cls)
+                bpy.utils.register_class(cls)
+            except Exception:
+                pass
     bpy.types.Scene.fbxmt_preview_mat_enum = bpy.props.EnumProperty(
         name   = "Material",
         items  = [(str(i), name, "") for i, name in enumerate(_MAT_DISPLAY_NAMES.values())],

@@ -1,6 +1,6 @@
 # GPL v3 — see https://www.gnu.org/licenses/gpl-3.0.en.html
 
-__version__ = "0.39.7"
+__version__ = "0.40.0.0"
 
 import bpy
 from .op import OT_FBXMT_Export
@@ -41,6 +41,10 @@ from .uv_unwrap import OT_FBXMT_UV_Unwrap, OT_FBXMT_UV_Add, OT_FBXMT_UV_Remove, 
 from .trim_gen import OT_FBXMT_Generate_Trim
 from .trim_gen2 import OT_FBXMT_Generate_Trim2
 from .ceiling_deco import (
+    OT_FBXMT_Assign_Room_Popup,
+    OT_FBXMT_Assign_Room_Pick,
+    OT_FBXMT_Assign_Room_Beam_Popup,
+    OT_FBXMT_Assign_Room_Beam_Pick,
     OT_FBXMT_Generate_Coving,
     OT_FBXMT_Generate_Parallel,
     OT_FBXMT_Generate_Spokes,
@@ -48,10 +52,23 @@ from .ceiling_deco import (
     OT_FBXMT_Generate_Beams,
 )
 from .beam_placement import (
-    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
-    FBXMT_GGT_ParallelBeam,
-    FBXMT_GGT_ParallelGroup,
-    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
+    OT_FBXMT_Par_Drag_OverrunStart,
+    OT_FBXMT_Par_Drag_OverrunEnd,
+    OT_FBXMT_Par_Drag_InsetStart,
+    OT_FBXMT_Par_Drag_InsetEnd,
+    OT_FBXMT_Par_Drag_SpanInsetStart,
+    OT_FBXMT_Par_Drag_SpanInsetEnd,
+    OT_FBXMT_Par_Drag_OffsetV,
+    OT_FBXMT_Par_Drag_OffsetLat,
+    OT_FBXMT_Par_Drag_VertS0,
+    OT_FBXMT_Par_Drag_VertS1,
+    OT_FBXMT_Par_Drag_VertS2,
+    OT_FBXMT_Par_Drag_VertS3,
+    OT_FBXMT_Par_Drag_VertE0,
+    OT_FBXMT_Par_Drag_VertE1,
+    OT_FBXMT_Par_Drag_VertE2,
+    OT_FBXMT_Par_Drag_VertE3,
+    OT_FBXMT_Par_VertMode_Toggle,
     FBXMT_GGT_ParallelBeam,
     FBXMT_GGT_ParallelGroup,
     OT_FBXMT_Clear_All_Empties,
@@ -69,11 +86,6 @@ from .beam_placement import (
     OT_FBXMT_Preview_Dihedral_Ray,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
-    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
-    FBXMT_GGT_ParallelBeam,
-    FBXMT_GGT_ParallelGroup,
-    OT_FBXMT_Clear_All_Empties,
-    FBXMT_MT_ClearEmpties,
     OT_FBXMT_Clear_Parallel,
     OT_FBXMT_Place_Spokes,
     OT_FBXMT_Clear_Spokes,
@@ -109,13 +121,28 @@ from .panel import (
     FBXMT_UL_UVMaps,
     FBXMT_PT_Main,
     FBXMT_PT_SceneSetup,
+    FBXMT_PT_CurveCleaner,
     FBXMT_PT_Materials,
     FBXMT_PT_Import,
     FBXMT_PT_UVUnwrap,
     FBXMT_PT_Export,
     FBXMT_PT_TrimMain,
     FBXMT_PT_TrimGen2,
-    FBXMT_PT_CeilingDeco,
+)
+from .trim2 import (
+    FBXMT_Trim2Props,
+    FBXMT_OT_Trim2_Reset_Parallel,
+    FBXMT_OT_Trim2_Preview,
+    FBXMT_OT_Trim2_Commit,
+    FBXMT_OT_Trim2_Cancel,
+    FBXMT_PT_Trim2,
+    register   as register_trim2,
+    unregister as unregister_trim2,
+)
+from .spline_utils import (
+    FBXMT_OT_CurveCleaner,
+    register   as register_spline_utils,
+    unregister as unregister_spline_utils,
 )
 
 # Operators, Panels, PropertyGroups, and Menus must be registered manually.
@@ -123,6 +150,7 @@ from .panel import (
 classes = (
     FBXMT_GlobalPrefs,
     FBXMT_Props,
+    FBXMT_Trim2Props,
     FBXMT_UL_UVMaps,           # UIList — must be registered manually
     FBXMT_UL_AllMaterials,     # UIList — unified 10-item fixed-order list
     FBXMT_UL_BaseMaterials,    # UIList — must be registered manually
@@ -156,6 +184,10 @@ classes = (
     OT_FBXMT_SmartPack,
     OT_FBXMT_Generate_Trim,
     OT_FBXMT_Generate_Trim2,
+    OT_FBXMT_Assign_Room_Popup,
+    OT_FBXMT_Assign_Room_Pick,
+    OT_FBXMT_Assign_Room_Beam_Popup,
+    OT_FBXMT_Assign_Room_Beam_Pick,
     OT_FBXMT_Generate_Coving,
     OT_FBXMT_Generate_Parallel,
     OT_FBXMT_Generate_Spokes,
@@ -174,7 +206,23 @@ classes = (
     OT_FBXMT_Preview_Dihedral_Ray,
     OT_FBXMT_Place_Parallel,
     OT_FBXMT_Preview_Parallel_Rays,
-    OT_FBXMT_Parallel_Beam_Gizmo_Drag,
+    OT_FBXMT_Par_Drag_OverrunStart,
+    OT_FBXMT_Par_Drag_OverrunEnd,
+    OT_FBXMT_Par_Drag_InsetStart,
+    OT_FBXMT_Par_Drag_InsetEnd,
+    OT_FBXMT_Par_Drag_SpanInsetStart,
+    OT_FBXMT_Par_Drag_SpanInsetEnd,
+    OT_FBXMT_Par_Drag_OffsetV,
+    OT_FBXMT_Par_Drag_OffsetLat,
+    OT_FBXMT_Par_Drag_VertS0,
+    OT_FBXMT_Par_Drag_VertS1,
+    OT_FBXMT_Par_Drag_VertS2,
+    OT_FBXMT_Par_Drag_VertS3,
+    OT_FBXMT_Par_Drag_VertE0,
+    OT_FBXMT_Par_Drag_VertE1,
+    OT_FBXMT_Par_Drag_VertE2,
+    OT_FBXMT_Par_Drag_VertE3,
+    OT_FBXMT_Par_VertMode_Toggle,
     FBXMT_GGT_ParallelBeam,
     FBXMT_GGT_ParallelGroup,
     OT_FBXMT_Clear_All_Empties,
@@ -187,7 +235,13 @@ classes = (
     OT_FBXMT_Clear_Beams,
     OT_FBXMT_Save_Template,
     OT_FBXMT_Export,
+    FBXMT_OT_Trim2_Reset_Parallel,
+    FBXMT_OT_Trim2_Preview,
+    FBXMT_OT_Trim2_Commit,
+    FBXMT_OT_Trim2_Cancel,
+    FBXMT_OT_CurveCleaner,
     FBXMT_PT_Main,
+    FBXMT_PT_CurveCleaner,
     FBXMT_PT_SceneSetup,
     FBXMT_PT_Materials,
     FBXMT_PT_Import,
@@ -199,7 +253,7 @@ classes = (
 _trim_classes = (
     FBXMT_PT_TrimMain,
     FBXMT_PT_TrimGen2,
-    FBXMT_PT_CeilingDeco,
+    FBXMT_PT_Trim2,
 )
 
 
@@ -261,6 +315,8 @@ def register():
     register_project_setup()
     register_grid()
     register_handlers()
+    register_trim2()
+    register_spline_utils()
     # Primitives — optional, gated on addon preference
     try:
         addon = bpy.context.preferences.addons.get(__package__)
@@ -279,6 +335,8 @@ def register():
 
 def unregister():
     unregister_trim_tools()
+    unregister_trim2()
+    unregister_spline_utils()
     unregister_primitives()
     unregister_handlers()
     unregister_grid()
